@@ -7,27 +7,21 @@
 
 ## Current Iteration
 
-- Iteration: 3
-- Working on: Review Phase 1 artifacts
-- Started: 2026-06-11T11:45:00Z
+- Iteration: 4
+- Working on: Review Phase 1 fix — blob shard path & dead code
+- Started: 2026-06-11
 
 ## Last Completed
 
-- Phase 1: Core Server — Go + SQLite + Filesystem
-- Duration: ~1 iteration
-- Tests: N/A (Go not available on dev machine for compilation)
-- Key decisions:
-  - Dual-layer Tailscale auth: first layer rejects requests without Tailscale-User-Login (404), second layer validates SHA-256 session tokens
-  - SQLite with WAL mode, pure-Go driver (modernc.org/sqlite) for zero CGO dependency
-  - Blob storage with 2-hex-char sharding (<blob-dir>/<xx>/<uuid>.enc)
-  - Chunked upload via temp file + atomic rename pattern
-  - In-memory rate limiter with per-endpoint configs (register 3/hr, messages 60/min, search 30/min, recovery 3 failed → 1hr lock)
-  - WebSocket hub with connection map per user_id, typing/read receipt relay
-  - Using modernc.org/sqlite (CGO-free) over go-sqlite3 for simpler deployment
+- Fix 1: Blob path shard mismatch (commit: 71e7720)
+  - Changed `InsertFile` call in `server/handlers/files.go` from `fileID+".enc"` to `fileID[:2]+"/"+fileID+".enc"` to match `blobPath()` shard logic
+  - Fixed `DeleteBlobByPath` in `server/storage/blobs.go` to prepend `bs.rootDir` so cleanup uses absolute paths
+- Fix 2: Dead code removal (commit: 71e7720)
+  - Removed `blobPath := h.store.WriteBlob` / `_ = blobPath` from `uploadFile` in `server/handlers/files.go`
 
 ## Blockers
 
-- Go not installed on dev machine — could not compile. Need to verify on target.
+- None
 
 ## Notes for Next Iteration
 
