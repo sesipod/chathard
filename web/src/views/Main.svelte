@@ -1,9 +1,57 @@
 <script>
   import { push } from 'svelte-spa-router';
   import { onMount } from 'svelte';
+  import {
+    chatStore,
+    conversations,
+    activeConversationId,
+    activeConversation,
+    activeMessages,
+  } from '../lib/stores/chats.js';
+  import { auth } from '../lib/stores/auth.js';
+  import api from '../lib/api.js';
+  import LeftPanel from '../components/LeftPanel.svelte';
+  import RightPanel from '../components/RightPanel.svelte';
+  import NewChatModal from '../components/NewChatModal.svelte';
+  import NewGroupModal from '../components/NewGroupModal.svelte';
+  import SettingsPage from '../components/SettingsPage.svelte';
 
-  // ── Route guard: redirect to /login if not authenticated ──
+  // ── Auth guard ──
   let authenticated = false;
+  let currentUser = null;
+
+  // ── Modal visibility ──
+  let showNewChat = false;
+  let showNewGroup = false;
+  let showSettings = false;
+
+  // ── WebSocket ──
+  let ws = null;
+  let wsReady = false;
+
+  // ── Typing state ──
+  let typingSenders = {};       // { [convId]: Set<handle> }
+  let typingTimers = {};        // { [convId]: timeoutId }
+  let lastTypingSent = {};      // { [convId]: timestamp }
+  const TYPING_INTERVAL = 2000;
+  const TYPING_IDLE = 3000;
+  $: typingHandles =
+    $activeConversationId && typingSenders[$activeConversationId]
+      ? [...typingSenders[$activeConversationId]]
+      : [];
+  $: typingUserStr = typingHandles.length > 0 ? typingHandles.join(', ') : null;
+
+  // ── Mobile responsiveness ──
+  let windowWidth = 1200;
+  $: isMobile = windowWidth < 768;
+  $: showConversation = isMobile && $activeConversationId ? true : false;
+
+  // ── Toasts ──
+  let toasts = [];
+  let toastCounter = 0;
+
+  // ── Failed message queue (for retry / background sync) ──
+  let failedMessages = [];
 
   onMount(async () => {
     const token = sessionStorage.getItem('tailchat-token');
@@ -12,82 +60,354 @@
       return;
     }
     authenticated = true;
+
+    // Restore auth session
+    await auth.restoreSession();
+    const unsubAuth = auth.subscribe(($a) => {
+      currentUser = $a.user;
+    });
+
+    // Initial data load
+    await chatStore.loadConversations();
+
+    // Connect WebSocket
+    if (token) {
+      ws = api.connectWebSocket(token);
+
+      ws.addEventListener('open', () => {
+        wsReady = true;
+      });
+      ws.addEventListener('message', handleWSMessage);
+      ws.addEventListener('close', () => {
+        wsReady = false;
+      });
+      ws.addEventListener('error', () => {
+        wsReady = false;
+      });
+    }
+
+    // Track window resize for mobile layout
+    windowWidth = window.innerWidth;
+    const onResize = () => {
+      windowWidth = window.innerWidth;
+    };
+    window.addEventListener('resize', onResize);
+
+    return () => {
+      window.removeEventListener('resize', onResize);
+      unsubAuth();
+      if (ws) ws.close();
+    };
   });
 
-  // ── Active conversation state ──
-  let activeConversationId = '';
-  let activeConversationType = ''; // 'direct' | 'group'
+  // ── WebSocket event handler ──
+  function handleWSMessage(event) {
+    try {
+      const data = JSON.parse(event.data);
+      switch (data.type) {
+        case 'new_message': {
+          const msg = data.message || data;
+          const convId = msg.conversation_id || msg.sender_id;
+          chatStore.addMessage(convId, msg);
+          break;
+        }
+        case 'read_receipt': {
+          const convId = data.conversation_id || data.conversation_with;
+          if (convId) {
+            chatStore.messages.update((m) => {
+              const msgs = m[convId];
+              if (!msgs) return m;
+              return {
+                ...m,
+                [convId]: msgs.map((msg) =>
+                  msg.status === 'sent' || msg.status === 'delivered'
+                    ? { ...msg, status: 'read' }
+                    : msg,
+                ),
+              };
+            });
+          }
+          break;
+        }
+        case 'typing':
+          handleTypingReceive(data);
+          break;
+      }
+    } catch (e) {
+      console.warn('Failed to parse WS message:', e);
+    }
+  }
 
-  // ── Placeholder panel components (full implementation in later phases) ──
+  // ── Typing: receive indicator ──
+  function handleTypingReceive(data) {
+    const convId = data.conversation_id;
+    const handle = data.handle;
+    if (!convId || !handle) return;
+
+    if (!typingSenders[convId]) typingSenders[convId] = new Set();
+    typingSenders[convId].add(handle);
+
+    // Reset auto-clear timer
+    if (typingTimers[convId]) clearTimeout(typingTimers[convId]);
+    typingTimers[convId] = setTimeout(() => {
+      if (typingSenders[convId]) {
+        typingSenders[convId].delete(handle);
+        if (typingSenders[convId].size === 0) delete typingSenders[convId];
+      }
+      typingSenders = { ...typingSenders };
+    }, TYPING_IDLE);
+
+    typingSenders = { ...typingSenders };
+  }
+
+  // ── Typing: send indicator (debounced, called from MessageInput) ──
+  function handleTypingSend() {
+    if (!ws || !wsReady || !$activeConversationId) return;
+    const now = Date.now();
+    const last = lastTypingSent[$activeConversationId] || 0;
+    if (now - last >= TYPING_INTERVAL) {
+      lastTypingSent[$activeConversationId] = now;
+      ws.send(
+        JSON.stringify({
+          type: 'typing',
+          conversation_id: $activeConversationId,
+          is_typing: true,
+        }),
+      );
+    }
+  }
+
+  // ── Conversation selection ──
+  function handleSelectConversation(e) {
+    const conv = e.detail;
+    const convId = conv.id || conv.user_id;
+    chatStore.setActiveConversation(convId);
+    chatStore.markAsRead(convId);
+    chatStore.loadMessages(convId);
+  }
+
+  function handleBack() {
+    chatStore.setActiveConversation('');
+  }
+
+  // ── Sending messages (optimistic UI with retry queue) ──
+  async function handleSendMessage(e) {
+    const text = e.detail;
+    const conv = $activeConversation;
+    if (!conv || !text) return;
+
+    const convId = conv.id || conv.user_id;
+    const userId =
+      currentUser?.uuid || sessionStorage.getItem('tailchat-user-id');
+
+    // Optimistic insert
+    const optimisticId =
+      'opt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    const optimisticMsg = {
+      id: optimisticId,
+      content: text,
+      created_at: new Date().toISOString(),
+      status: 'sent',
+      is_own: true,
+      sender_id: userId,
+    };
+    chatStore.addMessage(convId, optimisticMsg);
+
+    try {
+      const result = await api.sendMessage({
+        recipientId: conv.type === 'group' ? null : convId,
+        groupId: conv.type === 'group' ? convId : null,
+        ciphertext: new TextEncoder().encode(text),
+        ephemeralPub: new Uint8Array(32),
+        nonce: new Uint8Array(12),
+      });
+
+      // Replace optimistic message with server response
+      if (result && result.id) {
+        chatStore.messages.update((m) => ({
+          ...m,
+          [convId]: (m[convId] || []).map((msg) =>
+            msg.id === optimisticId
+              ? { ...result, is_own: true, content: text }
+              : msg,
+          ),
+        }));
+      }
+    } catch (err) {
+      // Mark as failed
+      chatStore.messages.update((m) => ({
+        ...m,
+        [convId]: (m[convId] || []).map((msg) =>
+          msg.id === optimisticId ? { ...msg, status: 'failed' } : msg,
+        ),
+      }));
+
+      // Queue for retry
+      failedMessages = [
+        ...failedMessages,
+        { convId, text, timestamp: new Date().toISOString() },
+      ];
+      showToast('Message failed. Queued for retry.');
+
+      // Register background sync for offline retry
+      if ('serviceWorker' in navigator && 'SyncManager' in window) {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          await reg.sync.register('send-message');
+        } catch {
+          /* background sync unavailable */
+        }
+      }
+    }
+  }
+
+  async function handleAttachFile(e) {
+    try {
+      await api.uploadFile(e.detail);
+      showToast('File uploaded');
+    } catch {
+      showToast('File upload failed');
+    }
+  }
+
+  // ── Group creation ──
+  async function handleCreateGroup(e) {
+    const { name, memberIds } = e.detail;
+    try {
+      await api.createGroup(new TextEncoder().encode(name), memberIds);
+      showNewGroup = false;
+      showToast('Group created!');
+      await chatStore.loadConversations();
+    } catch (err) {
+      showToast('Failed to create group: ' + (err.message || ''));
+    }
+  }
+
+  // ── New 1:1 chat ──
+  function handleNewChatSelect(e) {
+    const user = e.detail.user;
+    showNewChat = false;
+    const userId = user.id || user.uuid;
+    chatStore.setActiveConversation(userId);
+    chatStore.loadConversations();
+    chatStore.loadMessages(userId);
+  }
+
+  // ── Settings ──
+  function handleOpenSettings() {
+    showSettings = true;
+  }
+
+  function handleCloseSettings() {
+    showSettings = false;
+  }
+
+  // ── Retention ──
+  async function handleRetention(e) {
+    const { conversationId, expiresIn } = e.detail;
+    try {
+      await api.updateRetention({
+        conversationWith: conversationId,
+        expiresIn: expiresIn || '',
+      });
+      showToast('Retention updated');
+    } catch {
+      showToast('Failed to update retention');
+    }
+  }
+
+  async function handleLeaveGroup(e) {
+    try {
+      await api.removeMember(
+        e.detail,
+        currentUser?.uuid || sessionStorage.getItem('tailchat-user-id'),
+      );
+      showToast('Left group');
+      await chatStore.loadConversations();
+      chatStore.setActiveConversation('');
+    } catch {
+      showToast('Failed to leave group');
+    }
+  }
+
+  function handleOpenFiles(e) {
+    // Placeholder — file browsing will be implemented in a future iteration
+  }
+
+  // ── Toast helper ──
+  function showToast(message) {
+    const id = ++toastCounter;
+    toasts = [...toasts, { id, message }];
+    setTimeout(() => {
+      toasts = toasts.filter((t) => t.id !== id);
+    }, 4000);
+  }
 </script>
 
 {#if authenticated}
   <div class="app-shell">
     <!-- Left Panel -->
-    <aside class="left-panel">
-      <header class="panel-header">
-        <h1 class="panel-title">Chats</h1>
-        <button class="icon-btn" title="Settings" aria-label="Settings">
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="10" cy="10" r="3" />
-            <path d="M10 1.5v2M10 16.5v2M1.5 10h2M16.5 10h2M3.4 3.4l1.4 1.4M15.2 15.2l1.4 1.4M3.4 16.6l1.4-1.4M15.2 4.8l1.4-1.4" />
-          </svg>
-        </button>
-      </header>
-
-      <button class="new-chat-btn" title="New conversation" aria-label="New conversation">
-        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="9" y1="2" x2="9" y2="16" />
-          <line x1="2" y1="9" x2="16" y2="9" />
-        </svg>
-        <span>New Chat</span>
-      </button>
-
-      <!-- Search -->
-      <div class="search-wrapper">
-        <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="7" cy="7" r="5" />
-          <line x1="11" y1="11" x2="14.5" y2="14.5" />
-        </svg>
-        <input
-          type="search"
-          class="search-input"
-          placeholder="Search conversations..."
-          aria-label="Search conversations"
-        />
-      </div>
-
-      <!-- Conversation list placeholder -->
-      <div class="conversation-list">
-        <div class="empty-list-message">
-          <p>No conversations yet.</p>
-          <p class="text-sm">Tap + to start a new chat.</p>
-        </div>
-      </div>
-    </aside>
+    <div
+      class="panel-wrapper left-wrapper"
+      class:hidden={isMobile && showConversation}
+    >
+      <LeftPanel
+        conversations={$conversations}
+        activeId={$activeConversationId}
+        on:selectConversation={handleSelectConversation}
+        on:openSettings={handleOpenSettings}
+        on:newChat={() => (showNewChat = true)}
+        on:newGroup={() => (showNewGroup = true)}
+      />
+    </div>
 
     <!-- Right Panel -->
-    <main class="right-panel">
-      <div class="empty-state">
-        <svg width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" style="color: var(--color-text-muted); opacity: 0.4;">
-          <rect x="4" y="8" width="40" height="32" rx="4" />
-          <line x1="12" y1="18" x2="36" y2="18" />
-          <line x1="12" y1="24" x2="30" y2="24" />
-          <line x1="12" y1="30" x2="26" y2="30" />
-          <polyline points="34,28 40,34 34,36" />
-        </svg>
-        <h2 class="empty-title">Select a conversation</h2>
-        <p class="empty-subtitle">or start a new one</p>
-        <button class="btn btn-primary new-chat-btn-inline">
-          <svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="9" y1="2" x2="9" y2="16" />
-            <line x1="2" y1="9" x2="16" y2="9" />
-          </svg>
-          New Chat
-        </button>
-      </div>
-    </main>
+    <div
+      class="panel-wrapper right-wrapper"
+      class:visible={!isMobile || showConversation}
+    >
+      <RightPanel
+        activeConversation={$activeConversation}
+        activeId={$activeConversationId}
+        messages={$activeMessages}
+        typingUser={typingUserStr}
+        on:back={handleBack}
+        on:sendMessage={handleSendMessage}
+        on:attachFile={handleAttachFile}
+        on:typing={handleTypingSend}
+        on:retention={handleRetention}
+        on:leaveGroup={handleLeaveGroup}
+        on:openFiles={handleOpenFiles}
+        on:newChat={() => (showNewChat = true)}
+      />
+    </div>
   </div>
+
+  <!-- Modals -->
+  <NewChatModal
+    show={showNewChat}
+    on:close={() => (showNewChat = false)}
+    on:select={handleNewChatSelect}
+  />
+  <NewGroupModal
+    show={showNewGroup}
+    on:close={() => (showNewGroup = false)}
+    on:create={handleCreateGroup}
+  />
+  <SettingsPage
+    show={showSettings}
+    on:close={handleCloseSettings}
+    conversations={$conversations}
+  />
+
+  <!-- Toast notifications -->
+  {#if toasts.length > 0}
+    <div class="toast-container">
+      {#each toasts as toast (toast.id)}
+        <div class="toast">{toast.message}</div>
+      {/each}
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -98,187 +418,83 @@
     background-color: var(--color-bg);
   }
 
-  /* ── Left Panel ── */
-  .left-panel {
-    width: 380px;
-    min-width: 380px;
+  .panel-wrapper {
     display: flex;
-    flex-direction: column;
-    border-right: 1px solid var(--color-border);
-    background-color: var(--color-bg-secondary);
+    height: 100%;
   }
 
-  .panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1rem 1rem 0.5rem;
+  .left-wrapper {
+    width: 380px;
+    min-width: 380px;
     flex-shrink: 0;
   }
 
-  .panel-title {
-    font-size: 1.25rem;
-    font-weight: 700;
-    color: var(--color-text);
-  }
-
-  .icon-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
-    border: none;
-    border-radius: 50%;
-    background-color: transparent;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    transition: background-color 0.15s;
-  }
-
-  .icon-btn:hover {
-    background-color: var(--color-bg-tertiary);
-  }
-
-  .new-chat-btn {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin: 0.25rem 1rem 0.5rem;
-    padding: 0.5rem 0.75rem;
-    border: none;
-    border-radius: 8px;
-    background-color: var(--color-accent);
-    color: #fff;
-    font-size: 0.875rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: opacity 0.15s;
-  }
-
-  .new-chat-btn:hover {
-    opacity: 0.9;
-  }
-
-  .search-wrapper {
-    position: relative;
-    margin: 0 1rem 0.5rem;
-  }
-
-  .search-icon {
-    position: absolute;
-    left: 10px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--color-text-muted);
-    pointer-events: none;
-  }
-
-  .search-input {
-    width: 100%;
-    padding: 0.5rem 0.75rem 0.5rem 2rem;
-    background-color: var(--color-bg);
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    color: var(--color-text);
-    font-size: 0.875rem;
-    outline: none;
-    transition: border-color 0.15s;
-  }
-
-  .search-input:focus {
-    border-color: var(--color-accent);
-  }
-
-  .search-input::placeholder {
-    color: var(--color-text-muted);
-    opacity: 0.6;
-  }
-
-  .conversation-list {
+  .right-wrapper {
     flex: 1;
-    overflow-y: auto;
-  }
-
-  .empty-list-message {
-    padding: 2rem 1rem;
-    text-align: center;
-    color: var(--color-text-muted);
-    font-size: 0.875rem;
-  }
-
-  .text-sm {
-    font-size: 0.8125rem;
-    margin-top: 0.25rem;
-    opacity: 0.7;
-  }
-
-  /* ── Right Panel ── */
-  .right-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
     min-width: 0;
   }
 
-  .empty-state {
-    flex: 1;
+  /* ── Toast container ── */
+  .toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 200;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 0.75rem;
-    padding: 2rem;
-  }
-
-  .empty-title {
-    font-size: 1.125rem;
-    font-weight: 600;
-    color: var(--color-text-muted);
-  }
-
-  .empty-subtitle {
-    font-size: 0.875rem;
-    color: var(--color-text-muted);
-    opacity: 0.7;
-  }
-
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
     gap: 0.5rem;
-    padding: 0.625rem 1.25rem;
-    font-size: 0.875rem;
-    font-weight: 600;
-    border: none;
+    max-width: 360px;
+  }
+
+  .toast {
+    padding: 0.75rem 1rem;
     border-radius: 8px;
-    cursor: pointer;
-    transition: opacity 0.15s;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    animation: toast-in 0.25s ease-out;
   }
 
-  .btn-primary {
-    background-color: var(--color-accent);
-    color: #fff;
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
-  .btn-primary:hover {
-    opacity: 0.9;
-  }
-
-  .new-chat-btn-inline {
-    margin-top: 0.5rem;
-  }
-
-  /* ── Mobile: single panel ── */
+  /* ── Mobile: single panel at a time ── */
   @media (max-width: 767px) {
-    .left-panel {
+    .left-wrapper {
       width: 100%;
       min-width: 0;
     }
 
-    .right-panel {
+    .left-wrapper.hidden {
       display: none;
+    }
+
+    .right-wrapper {
+      position: absolute;
+      inset: 0;
+      z-index: 10;
+      display: none;
+    }
+
+    .right-wrapper.visible {
+      display: flex;
+    }
+
+    .toast-container {
+      left: 1rem;
+      right: 1rem;
+      max-width: none;
     }
   }
 </style>

@@ -5,12 +5,15 @@
    * Props:
    *   activeConversation  {object|null}  The currently selected conversation, or null
    *   activeId            {string}       Conversation id (used for mobile back button)
+   *   messages            {Array}        Messages for the active conversation
+   *   typingUser          {string|null}  Handle of user currently typing
    *
    * Events:
    *   on:back         — fired on mobile when the back arrow is clicked
    *   on:newChat      — fired from EmptyState "New Chat" button
    *   on:sendMessage  — fired from Conversation with { detail: text }
    *   on:attachFile   — fired from Conversation with { detail: File }
+   *   on:typing       — fired when user types (for WS typing indicator)
    *   on:retention    — fired from Conversation with { detail: expiresIn }
    *   on:leaveGroup   — fired from Conversation
    *   on:openFiles    — fired from Conversation 3-dot menu
@@ -21,6 +24,8 @@
 
   export let activeConversation = null;
   export let activeId = '';
+  export let messages = [];
+  export let typingUser = null;
 
   const dispatch = createEventDispatcher();
 
@@ -40,6 +45,10 @@
     dispatch('attachFile', e.detail);
   }
 
+  function handleTyping() {
+    dispatch('typing');
+  }
+
   function handleRetention(e) {
     dispatch('retention', e.detail);
   }
@@ -57,9 +66,12 @@
   {#if activeConversation}
     <Conversation
       conversation={activeConversation}
+      messages={messages}
+      typingUser={typingUser}
       on:back={handleBack}
       on:sendMessage={handleSendMessage}
       on:attachFile={handleAttachFile}
+      on:typing={handleTyping}
       on:retention={handleRetention}
       on:leaveGroup={handleLeaveGroup}
       on:openFiles={handleOpenFiles}

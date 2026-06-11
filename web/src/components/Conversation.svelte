@@ -4,25 +4,29 @@
    *
    * Props:
    *   conversation  {object}  { id, type, handle, name, retention, ... }
+   *   messages      {Array}   Messages to display (from store)
+   *   typingUser    {string|null}  Handle of user currently typing
    *
    * Events:
    *   on:back         — fired when the mobile back arrow is clicked
    *   on:sendMessage  — fired with { detail: text } to send a message
    *   on:attachFile   — fired with { detail: File }
+   *   on:typing       — fired when the user types (for WS typing indicator)
    *   on:retention    — fired with { detail: expiresIn }
    *   on:leaveGroup   — fired when "Leave group" is selected
    *   on:openFiles    — fired when "Files" is selected in the menu
    */
-  import { createEventDispatcher, onMount, afterUpdate } from 'svelte';
+  import { createEventDispatcher, afterUpdate } from 'svelte';
   import MessageBubble from './MessageBubble.svelte';
   import MessageInput from './MessageInput.svelte';
   import Avatar from './common/Avatar.svelte';
 
   export let conversation = {};
+  export let messages = [];
+  export let typingUser = null;
 
   const dispatch = createEventDispatcher();
 
-  let messages = [];
   let messageListEl;
   let isScrolledUp = false;
   let showMenu = false;
@@ -117,6 +121,10 @@
     dispatch('back');
   }
 
+  function handleTyping() {
+    dispatch('typing');
+  }
+
   function toggleMenu() {
     showMenu = !showMenu;
   }
@@ -135,11 +143,6 @@
     }
   }
 
-  // ── Simulated messages for demonstration (will be replaced by store integration) ──
-  // In production, messages are loaded from the chat store and passed directly.
-  onMount(() => {
-    // Messages will be provided by parent via the store integration
-  });
 </script>
 
 <div class="conversation">
@@ -267,8 +270,10 @@
 
   <!-- Message input -->
   <MessageInput
+    typingUser={typingUser}
     on:send={handleSend}
     on:attach={handleAttach}
+    on:typing={handleTyping}
   />
 </div>
 

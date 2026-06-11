@@ -44,6 +44,11 @@
     }
   }
 
+  function handleInput() {
+    autoResize();
+    dispatch('typing');
+  }
+
   function handleFileSelect(e) {
     const file = e.target.files?.[0];
     if (file) {
@@ -92,7 +97,7 @@
       bind:this={textareaEl}
       bind:value={text}
       on:keydown={handleKeydown}
-      on:input={autoResize}
+      on:input={handleInput}
       class="text-input"
       placeholder="Type a message..."
       rows="1"
