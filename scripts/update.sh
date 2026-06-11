@@ -80,7 +80,11 @@ fi
 # ── Step 3: Build frontend ─────────────────────
 log "Building frontend"
 cd "${TAILCHAT_DIR}/web"
-npm ci
+if [[ -f package-lock.json ]]; then
+  npm ci
+else
+  npm install
+fi
 npm run build
 
 if [[ ! -f "${TAILCHAT_DIR}/web/dist/index.html" ]]; then

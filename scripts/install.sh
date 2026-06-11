@@ -121,7 +121,11 @@ chown -R tailchat:tailchat /opt/tailchat
 echo "=== Building frontend ==="
 if [[ -f /opt/tailchat/web/package.json ]]; then
   cd /opt/tailchat/web
-  npm ci
+  if [[ -f package-lock.json ]]; then
+    npm ci
+  else
+    npm install
+  fi
   npm run build
 else
   echo "WARNING: web/ not found — skipping frontend build"
