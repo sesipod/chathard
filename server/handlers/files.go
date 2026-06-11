@@ -131,11 +131,17 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 
 func (h *FilesHandler) downloadFile(w http.ResponseWriter, r *http.Request, fileID string) {
 	userID := r.Context().Value(CtxKeyUserID).(string)
-	_ = userID
 
 	fileRec, err := h.queries.GetFile(fileID)
 	if err != nil {
 		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
+	// Authorization: only the uploader can download the file
+	// In the future, extend to conversation partners / group members
+	if fileRec.UploaderID != userID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,9 +14,10 @@ import (
 )
 
 type challengeEntry struct {
-	Challenge []byte
-	UserID    string
-	ExpiresAt time.Time
+	Challenge        []byte
+	UserID           string
+	DerivedPublicKey []byte // for Ed25519 signature verification
+	ExpiresAt        time.Time
 }
 
 // AuthHandler handles authentication endpoints.
@@ -94,9 +96,10 @@ func (h *AuthHandler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 
 	h.mu.Lock()
 	h.challenges[challengeHex] = &challengeEntry{
-		Challenge: challenge,
-		UserID:    user.ID,
-		ExpiresAt: time.Now().Add(5 * time.Minute),
+		Challenge:        challenge,
+		UserID:           user.ID,
+		DerivedPublicKey: user.DerivedPublicKeyEd25519,
+		ExpiresAt:        time.Now().Add(5 * time.Minute),
 	}
 	h.mu.Unlock()
 
@@ -147,11 +150,16 @@ func (h *AuthHandler) handleVerify(w http.ResponseWriter, r *http.Request) {
 		h.mu.Unlock()
 	}()
 
-	// In a real implementation, verify the Ed25519 signature against
-	// derived_public_key_ed25519 here. The client signs the challenge
-	// with its derived auth key, and we verify using the stored key.
-	// For now, we trust the client provided a valid signature.
-	_ = req.Signature
+	// Verify Ed25519 signature against the derived public key
+	sig, err := hex.DecodeString(req.Signature)
+	if err != nil || len(sig) != ed25519.SignatureSize {
+		http.Error(w, "Invalid signature", http.StatusUnauthorized)
+		return
+	}
+	if !ed25519.Verify(entry.DerivedPublicKey, entry.Challenge, sig) {
+		http.Error(w, "Invalid signature", http.StatusUnauthorized)
+		return
+	}
 
 	// Generate session token
 	token := make([]byte, 32)

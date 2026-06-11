@@ -130,9 +130,9 @@ func main() {
 	registerHandler := handlers.NewRegisterHandler(queries)
 	mux.Handle("/api/register", rl.Middleware("register", rl.Cfg().Register)(tailscaleAuth(registerHandler)))
 
-	// Auth endpoints (no session required)
+	// Auth endpoints (rate limited, no session required)
 	authHandler := handlers.NewAuthHandler(queries)
-	mux.Handle("/api/auth/", tailscaleAuth(authHandler))
+	mux.Handle("/api/auth/", tailscaleAuth(rl.Middleware("auth", rl.Cfg().Messages)(authHandler)))
 
 	// Recover endpoint (rate limited)
 	recoverHandler := handlers.NewRecoverHandler(queries)
@@ -209,10 +209,11 @@ func main() {
 		})
 	}
 
-	// Build middleware chain: security headers -> CORS -> rate limit -> mux
+	// Build middleware chain: security headers -> CORS -> body limit -> mux
 	var handler http.Handler = mux
 	handler = securityHeaders(handler)
 	handler = corsMiddleware(cfg.Server.TailnetDomain)(handler)
+	handler = bodyLimit(10 << 20)(handler) // 10MB max request body
 
 	// Start server
 	server := &http.Server{
@@ -326,6 +327,16 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// bodyLimit restricts the request body size to maxBytes.
+func bodyLimit(maxBytes int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // parseSize parses a size string like "10GB", "100MB" into bytes.

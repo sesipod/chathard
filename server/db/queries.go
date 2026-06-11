@@ -381,6 +381,29 @@ func (q *Queries) MarkCodeUsed(userID, recoveryCodeHash string) error {
 	return err
 }
 
+// GetUnusedRecoveryBackups returns all unused recovery backup entries for a user.
+// Used for constant-time comparison in the recover handler.
+func (q *Queries) GetUnusedRecoveryBackups(userID string) ([]RecoveryBackupRow, error) {
+	rows, err := q.db.Query(
+		`SELECT recovery_code_hash, encrypted_private_key, salt FROM encrypted_key_backups WHERE user_id = ? AND used = 0`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var backups []RecoveryBackupRow
+	for rows.Next() {
+		var b RecoveryBackupRow
+		if err := rows.Scan(&b.RecoveryCodeHash, &b.EncryptedPrivateKey, &b.Salt); err != nil {
+			return nil, err
+		}
+		backups = append(backups, b)
+	}
+	return backups, rows.Err()
+}
+
 func (q *Queries) GetRecoveryCodesRemaining(userID string) (int, error) {
 	var count int
 	err := q.db.QueryRow(`SELECT COUNT(*) FROM encrypted_key_backups WHERE user_id = ? AND used = 0`, userID).Scan(&count)
@@ -469,6 +492,12 @@ type FileRow struct {
 	SizeBytes         int64
 	CreatedAt         time.Time
 	ExpiresAt         *time.Time
+}
+
+type RecoveryBackupRow struct {
+	RecoveryCodeHash   string
+	EncryptedPrivateKey []byte
+	Salt               []byte
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

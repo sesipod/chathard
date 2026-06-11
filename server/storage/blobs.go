@@ -7,12 +7,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 )
 
 // BlobStore handles encrypted blob storage on the filesystem.
 type BlobStore struct {
-	rootDir  string
-	maxBytes int64 // 0 = unlimited
+	rootDir   string
+	maxBytes  int64 // 0 = unlimited
+	totalUsed atomic.Int64 // in-memory counter, avoids O(n²) filesystem walk
 }
 
 // NewBlobStore creates a BlobStore rooted at rootDir.
@@ -37,25 +39,18 @@ func (bs *BlobStore) WriteBlob(uuid string, data []byte) error {
 		return fmt.Errorf("create shard dir: %w", err)
 	}
 
-	// Check storage limit
-	if bs.maxBytes > 0 {
-		var total int64
-		filepath.Walk(bs.rootDir, func(p string, fi os.FileInfo, err error) error {
-			if err == nil && !fi.IsDir() {
-				total += fi.Size()
-			}
-			return nil
-		})
-		if total+int64(len(data)) > bs.maxBytes {
-			return fmt.Errorf("blob storage limit exceeded")
-		}
+	// Check storage limit via in-memory counter (no filesystem walk)
+	if bs.maxBytes > 0 && bs.totalUsed.Load()+int64(len(data)) > bs.maxBytes {
+		return fmt.Errorf("blob storage limit exceeded")
 	}
 
-	// Write to temp file, rename atomically
+	// Write to temp file with restricted permissions, rename atomically
 	tmp, err := os.CreateTemp(dir, "*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
+	tmpName := tmp.Name()
+	os.Chmod(tmpName, 0600)
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
@@ -69,6 +64,7 @@ func (bs *BlobStore) WriteBlob(uuid string, data []byte) error {
 		os.Remove(tmp.Name())
 		return fmt.Errorf("rename: %w", err)
 	}
+	bs.totalUsed.Add(int64(len(data)))
 	return nil
 }
 
@@ -100,35 +96,57 @@ func (cw *chunkedWriter) Write(p []byte) (int, error) {
 func (cw *chunkedWriter) Close() error {
 	path := cw.store.blobPath(cw.uuid)
 	tmpName := cw.tmpFile.Name()
+	fi, err := cw.tmpFile.Stat()
+	if err != nil {
+		cw.tmpFile.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	fileSize := fi.Size()
 	if err := cw.tmpFile.Close(); err != nil {
 		os.Remove(tmpName)
 		return err
 	}
+	os.Chmod(tmpName, 0600)
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("rename: %w", err)
 	}
+	cw.store.totalUsed.Add(fileSize)
 	return nil
 }
 
 // ReadBlob reads encrypted data from disk.
 func (bs *BlobStore) ReadBlob(uuid string) ([]byte, error) {
-	path := bs.blobPath(uuid)
-	return os.ReadFile(path)
+	return os.ReadFile(bs.blobPath(uuid))
 }
 
-// DeleteBlob removes a blob from disk.
+// DeleteBlob removes a blob from disk and decrements the usage counter.
 func (bs *BlobStore) DeleteBlob(uuid string) error {
 	path := bs.blobPath(uuid)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
-	return nil
+	bs.totalUsed.Add(-fi.Size())
+	return os.Remove(path)
 }
 
-// DeleteBlobByPath removes a blob by its full path.
+// DeleteBlobByPath removes a blob by its relative path within the blob store.
 func (bs *BlobStore) DeleteBlobByPath(path string) error {
-	return os.Remove(filepath.Join(bs.rootDir, path))
+	fullPath := filepath.Join(bs.rootDir, path)
+	fi, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	bs.totalUsed.Add(-fi.Size())
+	return os.Remove(fullPath)
 }
 
 // GenerateUUID generates a random hex UUID (32 hex chars).
@@ -138,14 +156,7 @@ func GenerateUUID() string {
 	return hex.EncodeToString(b)
 }
 
-// TotalSize returns total bytes used by blob storage.
+// TotalSize returns total bytes used by blob storage (from in-memory counter).
 func (bs *BlobStore) TotalSize() (int64, error) {
-	var total int64
-	err := filepath.Walk(bs.rootDir, func(p string, fi os.FileInfo, err error) error {
-		if err == nil && !fi.IsDir() {
-			total += fi.Size()
-		}
-		return nil
-	})
-	return total, err
+	return bs.totalUsed.Load(), nil
 }

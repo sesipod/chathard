@@ -40,23 +40,43 @@ func (h *RecoverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	encryptedKey, salt, err := h.queries.GetRecoveryBackup(req.UserID, req.RecoveryCodeHash)
-
-	// Constant-time comparison to prevent timing oracles
-	// Always compare even if SQL returned no rows
-	reqHash := []byte(req.RecoveryCodeHash)
-	fakeHash := []byte("0000000000000000000000000000000000000000000000000000")
-	if subtle.ConstantTimeCompare(reqHash, fakeHash) == 0 {
-		// Dummy — always true, prevents leaking whether row existed
-	}
-
+	// Fetch all unused recovery backups for this user (no hash filter in SQL)
+	// so we can do constant-time comparison in Go to prevent timing attacks.
+	backups, err := h.queries.GetUnusedRecoveryBackups(req.UserID)
 	if err != nil {
 		http.Error(w, "Invalid recovery code", http.StatusUnauthorized)
 		return
 	}
 
+	// Constant-time comparison: iterate all codes to find a match
+	// This prevents leaking whether a specific hash exists via timing
+	reqHash, _ := hex.DecodeString(req.RecoveryCodeHash)
+	if len(reqHash) != 32 {
+		reqHash = make([]byte, 32)
+	}
+
+	var encryptedKey, salt []byte
+	var matchedHash string
+	for _, b := range backups {
+		storedHash, _ := hex.DecodeString(b.RecoveryCodeHash)
+		if len(storedHash) != 32 {
+			storedHash = make([]byte, 32)
+		}
+		if subtle.ConstantTimeCompare(reqHash, storedHash) == 1 {
+			encryptedKey = b.EncryptedPrivateKey
+			salt = b.Salt
+			matchedHash = b.RecoveryCodeHash
+			break
+		}
+	}
+
+	if encryptedKey == nil {
+		http.Error(w, "Invalid recovery code", http.StatusUnauthorized)
+		return
+	}
+
 	// Mark code as used
-	if err := h.queries.MarkCodeUsed(req.UserID, req.RecoveryCodeHash); err != nil {
+	if err := h.queries.MarkCodeUsed(req.UserID, matchedHash); err != nil {
 		http.Error(w, "Failed to mark code used", http.StatusInternalServerError)
 		return
 	}
