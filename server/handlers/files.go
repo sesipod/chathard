@@ -115,10 +115,7 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blobPath := h.store.WriteBlob // just to get the shard path pattern
-	_ = blobPath
-
-	if err := h.queries.InsertFile(fileID, userID, fileID+".enc", encryptedMeta, int64(len(encryptedData)), nil); err != nil {
+	if err := h.queries.InsertFile(fileID, userID, fileID[:2]+"/"+fileID+".enc", encryptedMeta, int64(len(encryptedData)), nil); err != nil {
 		h.store.DeleteBlob(fileID)
 		http.Error(w, "Failed to create file record", http.StatusInternalServerError)
 		return

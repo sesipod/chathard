@@ -128,7 +128,7 @@ func (bs *BlobStore) DeleteBlob(uuid string) error {
 
 // DeleteBlobByPath removes a blob by its full path.
 func (bs *BlobStore) DeleteBlobByPath(path string) error {
-	return os.Remove(path)
+	return os.Remove(filepath.Join(bs.rootDir, path))
 }
 
 // GenerateUUID generates a random hex UUID (32 hex chars).
