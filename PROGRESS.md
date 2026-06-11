@@ -8,31 +8,22 @@
 - [x] Phase 3a: Svelte SPA scaffold — layout, login, PWA (commit: pending)
 - [x] Phase 3b: Chat list panel, API client, Svelte stores, common components (commit: pending)
 - [x] Phase 3c: Conversation view, message components, and new chat/group modals
+- [x] **Phase 3 final: Real-time WebSocket integration, mobile UX finalization** (commit: pending)
 
 ## Current Iteration
 
-- Iteration: 10
+- Iteration: 11
 - Working on: Phase 4 — Security hardening
 - Started: 2026-06-11
 
 ## Last Completed
 
-- **Phase 3d: Settings page** (1 file, 173 lines)
-  - `web/src/components/SettingsPage.svelte` (173 lines)
-  - Account section: handle, UUID (copyable), public key fingerprint (copyable)
-  - Security section: recovery codes remaining (tappable → sub-view), export private key (with dialog), logout (with dialog)
-  - Appearance section: Dark/Light/System segmented control (persists via settings store)
-  - Conversation Defaults: auto-delete dropdown (Never/1h/24h/7d/30d/90d)
-  - Per-Conversation Retention: lists all conversations with avatar, retention badge, Change button → dropdown Save/Cancel
-  - About section: app version, tailnet, server health status
-  - Full-screen overlay with back button, dark theme, scrollable
-  - `web/src/components/EmptyState.svelte` (76 lines) — Placeholder when no chat selected, centered icon + "New Chat" button
-  - `web/src/components/RightPanel.svelte` (78 lines) — Right panel container, shows EmptyState or Conversation, mobile slide-in with back arrow
-  - `web/src/components/Conversation.svelte` (264 lines) — Active conversation: header (Avatar, retention badge, 3-dot menu), message list with date separators, auto-scroll, scroll-to-bottom FAB, MessageInput
-  - `web/src/components/MessageBubble.svelte` (96 lines) — Message bubble: left/right alignment, status icons (sent/delivered/read), sender handle for groups, system messages, date separators
-  - `web/src/components/MessageInput.svelte` (117 lines) — Sticky bottom bar: expandable textarea (max 4 lines), attachment button, send button, typing indicator display
-  - `web/src/components/NewChatModal.svelte` (175 lines) — Modal overlay with debounced user search (min 3 chars), results with key fingerprint, selects to start 1:1 conversation
-  - `web/src/components/NewGroupModal.svelte` (295 lines) — Multi-step wizard (name → members → review), member search with removable chips, prepares data for group key encryption + API call
+- **Phase 3 final: WebSocket integration + mobile UX finalization** (5 files modified)
+  - `web/src/views/Main.svelte` — Complete rewrite: store wiring (chats, auth, settings), WebSocket connect on mount with auto-reconnect, real-time message/read_receipt/typing WS event dispatch, LeftPanel↔RightPanel conversation data flow, NewChatModal/NewGroupModal visibility, SettingsPage overlay, optimistic message send with retry queue and background sync registration, mobile responsive single-panel layout with slide transitions (768px breakpoint), toast notification system, failed message queue for retry
+  - `web/src/components/LeftPanel.svelte` — Added "+" dropdown menu (New Chat / New Group) with `on:newGroup` event, click-outside-to-close behavior
+  - `web/src/components/RightPanel.svelte` — Added `messages` and `typingUser` props, forwarded `on:typing` event for WS typing indicator
+  - `web/src/components/Conversation.svelte` — Accepts `messages` as external prop (from store) and `typingUser` prop for "X is typing..." display, forwards `on:typing` event
+  - `web/src/components/MessageInput.svelte` — Added `on:typing` event dispatch on each keystroke, wired to debounced WS typing send
 
 ## Blockers
 
@@ -40,6 +31,4 @@
 
 ## Notes for Next Iteration
 
-- Phase 3d: Settings page (handle, recovery codes, theme, retention, logout)
-- Integrate stores with all new components
-- Wire up Main.svelte to use RightPanel, Conversation, NewChatModal, NewGroupModal
+- Phase 4: Security hardening — key blinding, SHA-256 session tokens, constant-time comparisons, unique AES-GCM keys per file
