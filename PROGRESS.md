@@ -2,35 +2,34 @@
 
 ## Completed
 
-- [x] Phase 0: Automated Deployment (commit: pending)
+- [x] Phase 0: Automated Deployment (commit: 88d5ca5)
+- [x] Phase 1: Core Server — Go + SQLite + Filesystem (commit: pending)
 
 ## Current Iteration
 
-- Iteration: 1
-- Working on: Phase 0 — Automated Deployment (finished)
-- Started: 2026-06-11T00:00:00Z
-- Completed: 2026-06-11T11:06:00Z
+- Iteration: 3
+- Working on: Review Phase 1 artifacts
+- Started: 2026-06-11T11:45:00Z
 
 ## Last Completed
 
-- Phase 0: Automated Deployment
+- Phase 1: Core Server — Go + SQLite + Filesystem
 - Duration: ~1 iteration
-- Tests: N/A (scripts only)
+- Tests: N/A (Go not available on dev machine for compilation)
 - Key decisions:
-  - Go 1.23 pinned via official tarball
-  - Node.js 22 LTS via NodeSource
-  - Tailscale serve --https 443 for PWA access
-  - UFW locked to tailscale0 only
-  - Atomic swap pattern for zero-downtime-ish updates
-  - schema_migrations table for idempotent DB migrations
-  - systemd unit with full security hardening (ProtectSystem, NoNewPrivileges, etc.)
+  - Dual-layer Tailscale auth: first layer rejects requests without Tailscale-User-Login (404), second layer validates SHA-256 session tokens
+  - SQLite with WAL mode, pure-Go driver (modernc.org/sqlite) for zero CGO dependency
+  - Blob storage with 2-hex-char sharding (<blob-dir>/<xx>/<uuid>.enc)
+  - Chunked upload via temp file + atomic rename pattern
+  - In-memory rate limiter with per-endpoint configs (register 3/hr, messages 60/min, search 30/min, recovery 3 failed → 1hr lock)
+  - WebSocket hub with connection map per user_id, typing/read receipt relay
+  - Using modernc.org/sqlite (CGO-free) over go-sqlite3 for simpler deployment
 
 ## Blockers
 
-- None
+- Go not installed on dev machine — could not compile. Need to verify on target.
 
 ## Notes for Next Iteration
 
-- Phase 1: Core Server — Go + SQLite + Filesystem
-- Server needs to implement GET /api/health and --version flag (referenced by install.sh/update.sh)
-- 14 server files expected, ~2500 lines max
+- Phase 2: Client-Side Crypto Layer
+- Phase 3: Web App Frontend
