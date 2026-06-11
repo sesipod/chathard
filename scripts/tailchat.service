@@ -1,0 +1,27 @@
+[Unit]
+Description=TailChat Server
+After=network-online.target tailscaled.service
+Wants=network-online.target
+Requires=tailscaled.service
+
+[Service]
+Type=simple
+User=tailchat
+Group=tailchat
+WorkingDirectory=/opt/tailchat
+ExecStart=/opt/tailchat/tailchat-server \
+  --db-path /opt/tailchat/data/tailchat.db \
+  --blob-dir /opt/tailchat/data/blobs \
+  --addr localhost:3000
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/tailchat/data
+ReadOnlyPaths=/opt/tailchat/web/dist
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

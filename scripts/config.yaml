@@ -1,0 +1,17 @@
+# /opt/tailchat/config.yaml — TailChat Server Configuration
+server:
+  addr: "localhost:3000"
+  tailnet_domain: "example.ts.net"  # your tailnet name
+
+storage:
+  db_path: "/opt/tailchat/data/tailchat.db"
+  blob_dir: "/opt/tailchat/data/blobs"
+  max_blob_storage: "10GB"
+  max_upload_size: "100MB"
+
+cleanup:
+  interval: "1h"  # how often to check for expired messages/blobs
+
+logging:
+  level: "info"   # debug, info, warn, error
+  format: "json"  # json for journald
