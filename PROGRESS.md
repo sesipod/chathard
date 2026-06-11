@@ -6,26 +6,25 @@
 - [x] Phase 1: Core Server — Go + SQLite + Filesystem (commit: 71e7720)
 - [x] Phase 2: Client-Side Crypto Layer (commit: pending)
 - [x] Phase 3a: Svelte SPA scaffold — layout, login, PWA (commit: pending)
+- [x] Phase 3b: Chat list panel, API client, Svelte stores, common components (commit: pending)
+- [x] Phase 3c: Conversation view, message components, and new chat/group modals
 
 ## Current Iteration
 
-- Iteration: 8
-- Working on: Phase 3b — Chat list panel, API client, Svelte stores, common components
+- Iteration: 9
+- Working on: Phase 3d — Settings page, finishes stores integration
 - Started: 2026-06-11
 
 ## Last Completed
 
-- **Phase 3b: Chat list panel, API client, Svelte stores, common components** (10 files, ~1,298 lines)
-  - `web/src/lib/api.js` (271 lines) — REST + WebSocket client with Bearer auth, all 20+ endpoints
-  - `web/src/lib/stores/auth.js` (140 lines) — Svelte writable store: challenge → sign → verify flow, restoreSession, logout
-  - `web/src/lib/stores/chats.js` (138 lines) — Conversations + messages store with optimistic inserts, unread tracking, recency sorting
-  - `web/src/lib/stores/settings.js` (81 lines) — Theme (dark/light/system) + defaultRetention, persisted to localStorage
-  - `web/src/components/LeftPanel.svelte` (145 lines) — 380px chat list panel, gear icon → Settings, "+" button → New, SearchInput
-  - `web/src/components/ChatList.svelte` (61 lines) — Scrollable conversation list with empty state, delegates to ChatListItem
-  - `web/src/components/ChatListItem.svelte` (165 lines) — Conversation row: Avatar, display name, preview, relative timestamp, unread badge
-  - `web/src/components/common/Avatar.svelte` (56 lines) — Circular avatar with deterministic HSL colour from text hash
-  - `web/src/components/common/Modal.svelte` (123 lines) — Reusable modal: backdrop blur, click-outside/Escape dismiss, header/body/footer slots
-  - `web/src/components/common/SearchInput.svelte` (118 lines) — 300ms debounced search with clear button, Signal-style styling
+- **Phase 3c: Conversation view, message components, and new chat/group modals** (7 files, ~1,101 lines)
+  - `web/src/components/EmptyState.svelte` (76 lines) — Placeholder when no chat selected, centered icon + "New Chat" button
+  - `web/src/components/RightPanel.svelte` (78 lines) — Right panel container, shows EmptyState or Conversation, mobile slide-in with back arrow
+  - `web/src/components/Conversation.svelte` (264 lines) — Active conversation: header (Avatar, retention badge, 3-dot menu), message list with date separators, auto-scroll, scroll-to-bottom FAB, MessageInput
+  - `web/src/components/MessageBubble.svelte` (96 lines) — Message bubble: left/right alignment, status icons (sent/delivered/read), sender handle for groups, system messages, date separators
+  - `web/src/components/MessageInput.svelte` (117 lines) — Sticky bottom bar: expandable textarea (max 4 lines), attachment button, send button, typing indicator display
+  - `web/src/components/NewChatModal.svelte` (175 lines) — Modal overlay with debounced user search (min 3 chars), results with key fingerprint, selects to start 1:1 conversation
+  - `web/src/components/NewGroupModal.svelte` (295 lines) — Multi-step wizard (name → members → review), member search with removable chips, prepares data for group key encryption + API call
 
 ## Blockers
 
@@ -33,5 +32,6 @@
 
 ## Notes for Next Iteration
 
-- Phase 3c: Conversation view (RightPanel, Conversation, MessageBubble, MessageInput)
-- Phase 3d: New chat/group modals, settings page, finish stores integration
+- Phase 3d: Settings page (handle, recovery codes, theme, retention, logout)
+- Integrate stores with all new components
+- Wire up Main.svelte to use RightPanel, Conversation, NewChatModal, NewGroupModal
