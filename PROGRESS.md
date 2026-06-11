@@ -12,18 +12,17 @@
 
 ## Current Iteration
 
-- Iteration: 11
+- Iteration: 12
 - Working on: Phase 4 — Security hardening
 - Started: 2026-06-11
 
 ## Last Completed
 
-- **Phase 3 final: WebSocket integration + mobile UX finalization** (5 files modified)
-  - `web/src/views/Main.svelte` — Complete rewrite: store wiring (chats, auth, settings), WebSocket connect on mount with auto-reconnect, real-time message/read_receipt/typing WS event dispatch, LeftPanel↔RightPanel conversation data flow, NewChatModal/NewGroupModal visibility, SettingsPage overlay, optimistic message send with retry queue and background sync registration, mobile responsive single-panel layout with slide transitions (768px breakpoint), toast notification system, failed message queue for retry
-  - `web/src/components/LeftPanel.svelte` — Added "+" dropdown menu (New Chat / New Group) with `on:newGroup` event, click-outside-to-close behavior
-  - `web/src/components/RightPanel.svelte` — Added `messages` and `typingUser` props, forwarded `on:typing` event for WS typing indicator
-  - `web/src/components/Conversation.svelte` — Accepts `messages` as external prop (from store) and `typingUser` prop for "X is typing..." display, forwards `on:typing` event
-  - `web/src/components/MessageInput.svelte` — Added `on:typing` event dispatch on each keystroke, wired to debounced WS typing send
+- **Phase 4: Security hardening** (3 files modified)
+  - `server/handlers/auth.go` — Fixed session token expiry from 24h to 7 days, added periodic expired challenge cleanup goroutine (every 5 min)
+  - `server/middleware/ratelimit.go` — Added periodic stale entry cleanup goroutine to prevent memory leak (every 5 min, removes entries past max window unless still locked)
+  - `server/main.go` — Added periodic expired session cleanup goroutine (every 1 hour, deletes sessions where `expires_at < datetime('now')`)
+  - Verification: SHA-256 session hashing ✅, challenge 5-min expiry ✅, constant-time recovery comparison ✅, HKDF key blinding ✅, unique AES-GCM per file ✅, no hardcoded secrets ✅
 
 ## Blockers
 
@@ -31,4 +30,4 @@
 
 ## Notes for Next Iteration
 
-- Phase 4: Security hardening — key blinding, SHA-256 session tokens, constant-time comparisons, unique AES-GCM keys per file
+- All phases complete. TailChat is fully built.

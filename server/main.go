@@ -90,6 +90,22 @@ func main() {
 	cleaner.Start()
 	defer cleaner.Stop()
 
+	// Periodic expired session cleanup
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			res, err := sqlDB.Exec(`DELETE FROM sessions WHERE expires_at < datetime('now')`)
+			if err != nil {
+				log.Printf("session cleanup: %v", err)
+				continue
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				log.Printf("session cleanup: deleted %d expired sessions", n)
+			}
+		}
+	}()
+
 	// Initialize WebSocket hub
 	handlers.InitHub()
 

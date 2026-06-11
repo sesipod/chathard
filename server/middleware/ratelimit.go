@@ -50,12 +50,46 @@ type RateLimiter struct {
 	cfg    RateLimitConfig
 }
 
-// NewRateLimiter creates a new RateLimiter.
+// NewRateLimiter creates a new RateLimiter with periodic stale entry cleanup.
 func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
-	return &RateLimiter{
+	rl := &RateLimiter{
 		entries: make(map[string]*rateEntry),
 		cfg:     cfg,
 	}
+	// Periodic cleanup of stale entries to prevent memory leak
+	go func() {
+		// Use the max of all windows for cleanup threshold
+		maxWindow := cfg.Register.Window
+		if cfg.Messages.Window > maxWindow {
+			maxWindow = cfg.Messages.Window
+		}
+		if cfg.UserSearch.Window > maxWindow {
+			maxWindow = cfg.UserSearch.Window
+		}
+		if cfg.Recovery.Window > maxWindow {
+			maxWindow = cfg.Recovery.Window
+		}
+		if cfg.Recovery.LockDur > maxWindow {
+			maxWindow = cfg.Recovery.LockDur
+		}
+		// Clean every 5 minutes, remove entries past max window
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			rl.mu.Lock()
+			now := time.Now()
+			for key, entry := range rl.entries {
+				if now.Sub(entry.windowAt) > maxWindow {
+					if entry.locked && now.Sub(entry.lockedAt) < cfg.Recovery.LockDur {
+						continue // still locked
+					}
+					delete(rl.entries, key)
+				}
+			}
+			rl.mu.Unlock()
+		}
+	}()
+	return rl
 }
 
 // Middleware returns an HTTP middleware that rate-limits based on handler label.

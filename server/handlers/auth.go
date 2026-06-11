@@ -27,10 +27,26 @@ type AuthHandler struct {
 
 // NewAuthHandler creates a new AuthHandler.
 func NewAuthHandler(queries *db.Queries) *AuthHandler {
-	return &AuthHandler{
+	h := &AuthHandler{
 		queries:    queries,
 		challenges: make(map[string]*challengeEntry),
 	}
+	// Periodic cleanup of expired challenges and sessions
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			h.mu.Lock()
+			now := time.Now()
+			for key, entry := range h.challenges {
+				if now.After(entry.ExpiresAt) {
+					delete(h.challenges, key)
+				}
+			}
+			h.mu.Unlock()
+		}
+	}()
+	return h
 }
 
 // ServeHTTP routes auth sub-paths.
@@ -143,7 +159,8 @@ func (h *AuthHandler) handleVerify(w http.ResponseWriter, r *http.Request) {
 	tokenHex := hex.EncodeToString(token)
 	tokenHash := sha256.Sum256([]byte(tokenHex))
 
-	if err := h.queries.CreateSession(hex.EncodeToString(tokenHash[:]), entry.UserID, time.Now().Add(24*time.Hour)); err != nil {
+	expiresAt := time.Now().Add(7 * 24 * time.Hour)
+	if err := h.queries.CreateSession(hex.EncodeToString(tokenHash[:]), entry.UserID, expiresAt); err != nil {
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
@@ -151,7 +168,7 @@ func (h *AuthHandler) handleVerify(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"token":    tokenHex,
 		"user_id":  entry.UserID,
-		"expires":  time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339),
+		"expires":  expiresAt.UTC().Format(time.RFC3339),
 	})
 }
 
