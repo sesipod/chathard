@@ -8,20 +8,16 @@
 
 ## Current Iteration
 
-- Iteration: 5
-- Working on: Phase 2 — Client-Side Crypto Layer
+- Iteration: 6
+- Working on: Phase 2 — Fix 3 critical crypto bugs from Reviewer
 - Started: 2026-06-11
 
 ## Last Completed
 
-- Phase 2: Client-Side Crypto Layer
-  - `web/src/lib/crypto/keygen.js` (260 lines) — Ed25519 keygen with Web Crypto + @noble/curves fallback, X25519 conversion, HKDF-derived auth keys, recovery codes
-  - `web/src/lib/crypto/encrypt.js` (260 lines) — X25519 ECDH → HKDF → AES-256-GCM for 1:1 messages, symmetric group encryption, per-member group key distribution
-  - `web/src/lib/crypto/file-encrypt.js` (188 lines) — Chunked AES-256-GCM file encryption (1MB chunks), encrypted metadata
-  - `web/src/lib/crypto/recover.js` (85 lines) — PBKDF2 (100K iterations) → AES-GCM for master key recovery
-  - `web/src/lib/db.js` (323 lines) — IndexedDB wrapper with keys, contacts, group_keys, drafts, settings stores
-  - Total: 1,116 lines (under 1,200 limit)
-  - Fixes: Added exported `ed25519ToX25519`, fixed `encryptGroupKeyForMember` public key bug and nonce embedding
+- Bug fixes for Phase 2 crypto layer:
+  - Bug 1: `encryptMessage` — Removed Web Crypto try/catch that generated a mismatched ephemeral keypair. Now always derives `ephemeralPub` from `ephemeralPriv` using `@noble/curves` X25519.
+  - Bug 2: `encryptGroupKeyForMember` — Same pattern: removed Web Crypto try/catch that generated a random unrelated keypair. Now derives `senderEphemeralPub` from `ownX25519Priv` using `@noble/curves` X25519.
+  - Bug 3: `decryptFile` — `decryptFile` was consuming all remaining data as one chunk (`const remaining = data.length - pos`). Now calculates exact frame sizes per chunk using `metadata.size`: each frame = 12 (nonce) + `chunkPlainSize` + 16 (GCM tag), where `chunkPlainSize = Math.min(CHUNK_SIZE, remainingSize)`. This properly processes multi-chunk files.
 
 ## Blockers
 

@@ -125,15 +125,8 @@ export async function encryptMessage(plaintext, recipientX25519Pub, ownX25519Pri
   ephemeralPriv[31] &= 127;
   ephemeralPriv[31] |= 64;
 
-  let ephemeralPub;
-  try {
-    const kp = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
-    const raw = await crypto.subtle.exportKey('raw', kp.publicKey);
-    ephemeralPub = new Uint8Array(raw);
-  } catch {
-    const { x25519 } = await import('@noble/curves/x25519');
-    ephemeralPub = x25519.getPublicKey(ephemeralPriv);
-  }
+  const { x25519 } = await import('@noble/curves/x25519');
+  const ephemeralPub = x25519.getPublicKey(ephemeralPriv);
 
   // ECDH → shared secret
   const sharedSecret = await ecdh(ephemeralPriv, recipientX25519Pub);
@@ -214,16 +207,11 @@ export async function encryptGroupKeyForMember(groupKey, memberX25519Pub, ownX25
   const aesKey = await HKDF(sharedSecret, nonce, 'tailchat-group-key');
   const encryptedKey = await aesEncrypt(groupKey, aesKey, nonce);
 
-  // Generate ephemeral pubkey for the recipient to re-derive shared secret
-  let senderEphemeralPub;
-  try {
-    const kp = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
-    senderEphemeralPub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
-  } catch {
-    // For non-WebCrypto ECDH, the sender's X25519 public key is used
-    const { x25519 } = await import('@noble/curves/x25519');
-    senderEphemeralPub = x25519.getPublicKey(ownX25519Priv);
-  }
+  // Derive senderEphemeralPub from ownX25519Priv so the recipient can re-derive
+  // the shared secret. Using @noble/curves directly avoids a Web Crypto ephemeral
+  // keypair that would be mismatched with ownX25519Priv.
+  const { x25519 } = await import('@noble/curves/x25519');
+  const senderEphemeralPub = x25519.getPublicKey(ownX25519Priv);
 
   // Embed nonce as first 12 bytes of encryptedKey so decrypt can recover it
   const payload = new Uint8Array(12 + encryptedKey.length);

@@ -163,15 +163,13 @@ export async function decryptFile(encryptedBlob, fileKey, encryptedMetadata, onP
     const nonce = data.slice(pos, pos + 12);
     pos += 12;
 
-    // The rest is one encrypted chunk (ciphertext + 16-byte GCM tag)
-    // We need to read until the next nonce or end of data.
-    // Since chunk sizes vary (last chunk may be smaller), we use a heuristic:
-    // each frame = 12 (nonce) + chunkSize + 16 (GCM tag). The plaintext chunk
-    // size is at most CHUNK_SIZE, so ciphertext is at most CHUNK_SIZE + 16.
-    // We read the remaining data as one chunk.
-    const remaining = data.length - pos;
-    const chunkData = data.slice(pos, pos + remaining);
-    pos += remaining;
+    // Calculate exact frame size based on remaining plaintext size from metadata.
+    // Each encrypted chunk = plaintext_size + 16-byte GCM tag.
+    // Full chunks have plaintext_size = CHUNK_SIZE; the last chunk may be smaller.
+    const chunkPlainSize = Math.min(CHUNK_SIZE, metadata.size - totalDecrypted);
+    const chunkEncryptedSize = chunkPlainSize + 16;
+    const chunkData = data.slice(pos, pos + chunkEncryptedSize);
+    pos += chunkEncryptedSize;
 
     const plainChunk = await decryptChunk(chunkData, key, nonce);
     plainChunks.push(plainChunk);
