@@ -106,7 +106,7 @@ if [[ -n "$GIT_REPO" ]]; then
   else
     git clone "$GIT_REPO" /opt/tailchat/server-src
   fi
-  rsync -a /opt/tailchat/server-src/ /opt/tailchat/ --exclude=data
+  rsync -a /opt/tailchat/server-src/ /opt/tailchat/ --exclude=data --exclude=config.yaml
 else
   echo "============================================"
   echo " GIT_REPO not set. Manually copy files:"

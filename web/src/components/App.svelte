@@ -1,13 +1,13 @@
 <script>
-  import Router, { wrap } from 'svelte-spa-router';
+  import Router from 'svelte-spa-router';
   import Login from '../views/Login.svelte';
   import Main from '../views/Main.svelte';
 
   /** Hash-based routes */
   const routes = {
-    '/login': wrap({ component: Login }),
-    '/chat': wrap({ component: Main }),
-    '/chat/:id': wrap({ component: Main }),
+    '/login': Login,
+    '/chat': Main,
+    '/chat/:id': Main,
     '*': Login,
   };
 

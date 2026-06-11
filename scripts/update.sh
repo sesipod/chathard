@@ -39,7 +39,7 @@ COMMIT_HASH=$(cd "${SERVER_SRC_DIR}" && git log -1 --oneline 2>/dev/null || echo
 log "New commit: ${COMMIT_HASH}"
 
 # Sync source to working directories
-rsync -a "${SERVER_SRC_DIR}/" "${TAILCHAT_DIR}/" --exclude=data --exclude='.git'
+rsync -a "${SERVER_SRC_DIR}/" "${TAILCHAT_DIR}/" --exclude=data --exclude='.git' --exclude=config.yaml
 
 # ── Step 2: Check DB migrations ────────────────
 log "Checking for pending DB migrations"
