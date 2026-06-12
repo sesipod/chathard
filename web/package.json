@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@noble/curves": "^1.8.0",
+    "@noble/curves": "1.4.2",
     "svelte": "^5.0.0",
     "svelte-spa-router": "^4.0.1"
   },
