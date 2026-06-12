@@ -43,16 +43,34 @@ echo "=== Installing system packages ==="
 apt update
 apt install -y build-essential sqlite3 curl git ufw
 
-# ── Step 3: Install Go 1.23 ────────────────────
-echo "=== Installing Go 1.23 ==="
-if ! command -v go &>/dev/null || [[ "$(go version)" != *go1.23* ]]; then
-  # Fetch the latest Go 1.23.x patch version dynamically
-  GO_PATCH=$(curl -s https://go.dev/dl/?mode=json | grep -o '"version":"go1\.23\.[0-9]*"' | head -1 | grep -o '1\.23\.[0-9]*')
-  if [[ -z "$GO_PATCH" ]]; then
-    GO_PATCH="1.23.0" # fallback
+# ── Step 3: Install Go ─────────────────────────
+echo "=== Installing Go ==="
+GO_MIN_MAJOR=1
+GO_MIN_MINOR=23
+if ! command -v go &>/dev/null; then
+  need_go=true
+else
+  GO_CUR=$(go version | grep -oP 'go\d+\.\d+' | head -1)
+  GO_MAJOR=$(echo "$GO_CUR" | cut -d. -f1 | tr -d 'go')
+  GO_MINOR=$(echo "$GO_CUR" | cut -d. -f2)
+  if [[ "$GO_MAJOR" -gt "$GO_MIN_MAJOR" ]] || { [[ "$GO_MAJOR" -eq "$GO_MIN_MAJOR" ]] && [[ "$GO_MINOR" -ge "$GO_MIN_MINOR" ]]; }; then
+    need_go=false
+  else
+    need_go=true
   fi
-  echo "Downloading Go ${GO_PATCH}..."
-  curl -fsSL "https://go.dev/dl/go${GO_PATCH}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
+fi
+if [[ "${need_go:-true}" == "true" ]]; then
+  # Use GO_VERSION env var or fetch latest Go 1.26.x dynamically
+  if [[ -n "${GO_VERSION:-}" ]]; then
+    GO_VER="$GO_VERSION"
+  else
+    GO_VER=$(curl -s https://go.dev/dl/?mode=json | grep -o '"version":"go[0-9.]*"' | head -1 | grep -o '[0-9.]*' | head -1)
+    if [[ -z "$GO_VER" ]]; then
+      GO_VER="1.26.4" # fallback
+    fi
+  fi
+  echo "Downloading Go ${GO_VER}..."
+  curl -fsSL "https://go.dev/dl/go${GO_VER}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
   tar -C /usr/local -xzf /tmp/go.tar.gz
   rm -f /tmp/go.tar.gz
   cat > /etc/profile.d/go.sh <<'GOEOF'
