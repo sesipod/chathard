@@ -68,23 +68,17 @@
 
     try {
       // 1. Generate master Ed25519 keypair
-      console.log('[reg] step1: generateKeyPair');
       const masterKp = await generateKeyPair();
-      console.log('[reg] step1 done, pubLen:', masterKp.publicKey?.length);
 
       // 2. Derive X25519 + auth keypair
-      console.log('[reg] step2: deriveKeys');
       const derived = await deriveKeys(masterKp);
-      console.log('[reg] step2 done, x25519Priv:', derived.x25519Priv?.length);
 
       // 3. Generate 10 recovery codes and encrypt master key
-      console.log('[reg] step3: recovery codes');
       const codeBytes = generateRecoveryCodes();
       const formattedCodes = codeBytes.map(bytes => formatRecoveryCode(bytes));
       const backups = [];
       for (let i = 0; i < formattedCodes.length; i++) {
         const code = formattedCodes[i];
-        console.log('[reg] step3 encrypting code', i);
         const salt = crypto.getRandomValues(new Uint8Array(32));
         const encryptedKey = await encryptMasterKeyWithCode(masterKp.privateKey, code, salt);
         const codeHashBytes = new Uint8Array(
@@ -99,8 +93,6 @@
           salt: Array.from(salt),
         });
       }
-      console.log('[reg] step3 done');
-
       // 4. Store keys locally
       await storeKeyPair({
         masterPub: masterKp.publicKey,
@@ -138,7 +130,6 @@
       // Auto-login after showing codes
       await performLogin();
     } catch (e) {
-      console.error('[reg] FAILED:', e.name, e.message, e.stack);
       error = e.message || 'Registration failed';
     } finally {
       loading = false;

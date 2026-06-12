@@ -122,8 +122,8 @@ function ed25519PrivToX25519(edPriv) {
  * @returns {Promise<Uint8Array>} 32-byte X25519 public key.
  */
 async function ed25519PubToX25519(edPub) {
-  const { ed25519 } = await noble();
-  return ed25519.etf.edwardsToMontgomeryPub(edPub);
+  const mod = await import('@noble/curves/ed25519');
+  return mod.edwardsToMontgomery(edPub);
 }
 
 // ---------------------------------------------------------------------------
