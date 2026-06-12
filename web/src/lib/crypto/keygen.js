@@ -46,15 +46,12 @@ async function detectCryptoImpl() {
 let _nobleEd = null;
 let _nobleX = null;
 
-/**
- * Lazy-import @noble/curves modules.
- * @returns {Promise<{ed25519: any, x25519: any}>}
- */
 async function noble() {
   if (!_nobleEd) {
-    const { ed25519, x25519 } = await import('@noble/curves');
-    _nobleEd = ed25519;
-    _nobleX = x25519;
+    const edMod = await import('@noble/curves/ed25519');
+    const xMod = await import('@noble/curves/x25519');
+    _nobleEd = edMod.ed25519;
+    _nobleX = xMod.x25519;
   }
   return { ed25519: _nobleEd, x25519: _nobleX };
 }

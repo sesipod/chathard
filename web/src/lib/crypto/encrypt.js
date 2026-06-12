@@ -32,7 +32,7 @@ async function ecdh(privKey, pubKey) {
     return new Uint8Array(secret);
   } catch {
     // Fallback to @noble/curves
-    const { x25519 } = await import('@noble/curves');
+    const { x25519 } = await import('@noble/curves/x25519');
     return x25519.getSharedSecret(privKey, pubKey);
   }
 }
