@@ -92,11 +92,15 @@ if [[ ! -f "${TAILCHAT_DIR}/web/dist/index.html" ]]; then
   exit 1
 fi
 log "Frontend build complete"
+chown -R tailchat:tailchat "${TAILCHAT_DIR}/web/dist"
 
 # ── Step 4: Build backend ──────────────────────
 log "Building backend"
 cd "${TAILCHAT_DIR}/server"
-go build -o "${NEW_BIN}" .
+export PATH="$PATH:/usr/local/go/bin"
+go build -o /tmp/tailchat-server.new .
+mv /tmp/tailchat-server.new "${NEW_BIN}"
+chown tailchat:tailchat "${NEW_BIN}"
 
 if ! "${NEW_BIN}" --version &>/dev/null; then
   log "ERROR: Backend binary verification failed"

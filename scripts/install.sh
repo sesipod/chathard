@@ -153,11 +153,17 @@ fi
 echo "=== Building backend ==="
 if [[ -f /opt/tailchat/server/go.mod ]]; then
   cd /opt/tailchat/server
-  go build -o /opt/tailchat/tailchat-server .
+  export PATH="$PATH:/usr/local/go/bin"
+  go build -o /tmp/tailchat-server .
+  mv /tmp/tailchat-server /opt/tailchat/tailchat-server
+  chown tailchat:tailchat /opt/tailchat/tailchat-server
   /opt/tailchat/tailchat-server --version
 else
   echo "WARNING: server/ not found — skipping backend build"
 fi
+
+# Ensure all files are owned by tailchat user
+chown -R tailchat:tailchat /opt/tailchat
 
 # ── Step 11: Install systemd service ───────────
 echo "=== Installing systemd service ==="
