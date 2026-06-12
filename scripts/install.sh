@@ -134,10 +134,16 @@ if [[ -n "$GIT_REPO" ]]; then
     git clone "$GIT_REPO" /opt/tailchat/server-src
   fi
   rsync -a /opt/tailchat/server-src/ /opt/tailchat/ --exclude=data --exclude=config.yaml
+elif [[ -d "$(dirname "$0")/../server" && -d "$(dirname "$0")/../web" ]]; then
+  # Auto-detect: script is running from within the repo
+  SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+  echo "GIT_REPO not set, but detected repo at: $SCRIPT_DIR"
+  echo "Copying files from $SCRIPT_DIR..."
+  rsync -a "$SCRIPT_DIR/" /opt/tailchat/ --exclude=data --exclude=config.yaml
 else
   echo "============================================"
   echo " GIT_REPO not set. Manually copy files:"
-  echo "   scp -r ./tailchat/* root@<server>:/opt/tailchat/"
+  echo "   rsync -a ./tailchat/* /opt/tailchat/"
   echo " Then re-run this script."
   echo "============================================"
 fi
