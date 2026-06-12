@@ -17,4 +17,10 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
   },
+  resolve: {
+    alias: {
+      '@noble/curves/ed25519': '@noble/curves/esm/ed25519.js',
+      '@noble/curves/x25519': '@noble/curves/esm/x25519.js',
+    },
+  },
 });
