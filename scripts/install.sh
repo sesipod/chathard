@@ -45,30 +45,17 @@ apt install -y build-essential sqlite3 curl git ufw
 
 # ── Step 3: Install Go ─────────────────────────
 echo "=== Installing Go ==="
-GO_MIN_MAJOR=1
-GO_MIN_MINOR=23
-if ! command -v go &>/dev/null; then
-  need_go=true
-else
-  GO_CUR=$(go version | grep -oP 'go\d+\.\d+' | head -1)
-  GO_MAJOR=$(echo "$GO_CUR" | cut -d. -f1 | tr -d 'go')
-  GO_MINOR=$(echo "$GO_CUR" | cut -d. -f2)
-  if [[ "$GO_MAJOR" -gt "$GO_MIN_MAJOR" ]] || { [[ "$GO_MAJOR" -eq "$GO_MIN_MAJOR" ]] && [[ "$GO_MINOR" -ge "$GO_MIN_MINOR" ]]; }; then
-    need_go=false
-  else
-    need_go=true
+NEED_GO=1
+if command -v go &>/dev/null; then
+  GO_VER_OUT=$(go version 2>/dev/null || true)
+  echo "Found: $GO_VER_OUT"
+  if echo "$GO_VER_OUT" | grep -qE 'go1\.(2[3-9]|[3-9][0-9])' 2>/dev/null; then
+    echo "Go version is recent enough — skipping install"
+    NEED_GO=0
   fi
 fi
-if [[ "${need_go:-true}" == "true" ]]; then
-  # Use GO_VERSION env var or fetch latest Go 1.26.x dynamically
-  if [[ -n "${GO_VERSION:-}" ]]; then
-    GO_VER="$GO_VERSION"
-  else
-    GO_VER=$(curl -s https://go.dev/dl/?mode=json | grep -o '"version":"go[0-9.]*"' | head -1 | grep -o '[0-9.]*' | head -1)
-    if [[ -z "$GO_VER" ]]; then
-      GO_VER="1.26.4" # fallback
-    fi
-  fi
+if [[ "$NEED_GO" -eq 1 ]]; then
+  GO_VER="${GO_VERSION:-1.26.4}"
   echo "Downloading Go ${GO_VER}..."
   curl -fsSL "https://go.dev/dl/go${GO_VER}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
   tar -C /usr/local -xzf /tmp/go.tar.gz
@@ -78,8 +65,8 @@ export PATH=$PATH:/usr/local/go/bin
 GOEOF
   chmod 755 /etc/profile.d/go.sh
   export PATH="$PATH:/usr/local/go/bin"
+  echo "Go installed: $(go version)"
 fi
-echo "Go version: $(go version)"
 
 # ── Step 4: Install Node.js 22 LTS ─────────────
 echo "=== Installing Node.js 22 LTS ==="
