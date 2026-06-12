@@ -41,7 +41,7 @@ done
 # ── Step 2: Install system dependencies ────────
 echo "=== Installing system packages ==="
 apt update
-apt install -y build-essential sqlite3 curl git ufw
+apt install -y build-essential sqlite3 curl git ufw rsync
 
 # ── Step 3: Install Go ─────────────────────────
 echo "=== Installing Go ==="

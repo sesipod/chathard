@@ -152,17 +152,6 @@
       />
       <p class="field-hint">This name will be encrypted end-to-end.</p>
     </div>
-
-    <div slot="footer">
-      <button class="btn btn-cancel" on:click={handleClose}>Cancel</button>
-      <button
-        class="btn btn-primary"
-        disabled={!validName}
-        on:click={goToMembers}
-      >
-        Next
-      </button>
-    </div>
   {/if}
 
   <!-- Step 2: Add Members -->
@@ -232,17 +221,6 @@
         <div class="status-text">Add at least 1 person to start a group.</div>
       {/if}
     </div>
-
-    <div slot="footer">
-      <button class="btn btn-cancel" on:click={goBack}>Back</button>
-      <button
-        class="btn btn-primary"
-        disabled={!hasMinMembers}
-        on:click={goToReview}
-      >
-        Next ({selectedMembers.length})
-      </button>
-    </div>
   {/if}
 
   <!-- Step 3: Review -->
@@ -272,18 +250,23 @@
         <div class="error-message">{createError}</div>
       {/if}
     </div>
+  {/if}
 
-    <div slot="footer">
+  <!-- Footer (must be direct child of Modal for named slots in Svelte 5) -->
+  <div slot="footer">
+    {#if step === STEP_NAME}
+      <button class="btn btn-cancel" on:click={handleClose}>Cancel</button>
+      <button class="btn btn-primary" disabled={!validName} on:click={goToMembers}>Next</button>
+    {:else if step === STEP_MEMBERS}
       <button class="btn btn-cancel" on:click={goBack}>Back</button>
-      <button
-        class="btn btn-primary"
-        disabled={creating}
-        on:click={handleCreate}
-      >
+      <button class="btn btn-primary" disabled={!hasMinMembers} on:click={goToReview}>Next ({selectedMembers.length})</button>
+    {:else if step === STEP_REVIEW}
+      <button class="btn btn-cancel" on:click={goBack}>Back</button>
+      <button class="btn btn-primary" disabled={creating} on:click={handleCreate}>
         {creating ? 'Creating…' : 'Create Group'}
       </button>
-    </div>
-  {/if}
+    {/if}
+  </div>
 </Modal>
 
 <style>
