@@ -72,9 +72,7 @@ async function noble() {
  * @returns {Promise<Keypair>} `{ publicKey, privateKey }` as 32-byte Uint8Arrays.
  */
 export async function generateKeyPair() {
-  const impl = await detectCryptoImpl();
-
-  if (impl === 'webcrypto') {
+  try {
     const kp = await crypto.subtle.generateKey(
       { name: 'Ed25519' },
       true,
@@ -83,6 +81,9 @@ export async function generateKeyPair() {
     const pub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
     const priv = new Uint8Array(await crypto.subtle.exportKey('raw', kp.privateKey));
     return { publicKey: pub, privateKey: priv };
+  } catch {
+    // Web Crypto Ed25519 not fully supported (e.g. Safari can generate
+    // but can't export private keys) — fall back to @noble/curves
   }
 
   // Fallback: @noble/curves
