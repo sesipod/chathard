@@ -84,16 +84,19 @@ if ! command -v tailscale &>/dev/null; then
   curl -fsSL https://tailscale.com/install.sh | sh
 fi
 
+# Determine Tailscale hostname (use system hostname if available)
+TS_HOSTNAME="${TAILSCALE_HOSTNAME:-$(hostname 2>/dev/null || echo 'tailchat')}"
+
 # Check if already connected (has a tailscale0 IP assigned)
 if tailscale status &>/dev/null && tailscale ip -4 &>/dev/null; then
   echo "Tailscale is already connected — re-authenticating to clear stale state..."
-  tailscale up --force-reauth --hostname=tailchat-server
+  tailscale up --force-reauth --hostname="$TS_HOSTNAME"
 else
   if [[ -n "${TS_AUTH_KEY:-}" ]]; then
-    tailscale up --auth-key="$TS_AUTH_KEY" --hostname=tailchat-server
+    tailscale up --auth-key="$TS_AUTH_KEY" --hostname="$TS_HOSTNAME"
   else
     echo "WARNING: No TS_AUTH_KEY set. Starting interactive login..."
-    tailscale up --hostname=tailchat-server
+    tailscale up --hostname="$TS_HOSTNAME"
   fi
 fi
 
@@ -101,14 +104,22 @@ echo "Enabling Tailscale Serve (HTTPS on 443 → localhost:3000)..."
 tailscale serve --bg --https 443 localhost:3000
 # Let serve auto-provision the cert — do NOT call tailscale cert separately
 
-# Resolve tailnet domain from env var or tailscale status (handle empty grep safely)
-TAILNET_HOSTNAME="tailchat-server.${TAILNET_DOMAIN:-}"
+# Resolve tailnet domain from env var or auto-detect from tailscale status
+TAILNET_HOSTNAME="${TS_HOSTNAME}.${TAILNET_DOMAIN:-}"
 if [[ -z "${TAILNET_DOMAIN:-}" ]]; then
-  DOMAIN_JSON=$(tailscale status --json 2>/dev/null || true)
-  EXTRACTED=$(echo "$DOMAIN_JSON" | grep -o '"Domain":"[^"]*"' | cut -d'"' -f4 || true)
+  # Extract MagicDNSSuffix from tailscale status JSON (robust sed approach)
+  EXTRACTED=$(tailscale status --json 2>/dev/null | sed -n 's/.*"MagicDNSSuffix"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
   if [[ -n "$EXTRACTED" ]]; then
-    TAILNET_HOSTNAME="tailchat-server.$EXTRACTED"
+    TAILNET_HOSTNAME="${TS_HOSTNAME}.${EXTRACTED}"
+  else
+    echo "WARNING: Could not auto-detect tailnet domain."
+    echo "Set TAILNET_DOMAIN env var or pass it via sudo:"
+    echo "  sudo TAILNET_DOMAIN=your-domain.ts.net bash scripts/install.sh"
+    TAILNET_HOSTNAME=""
   fi
+fi
+if [[ -n "$TAILNET_HOSTNAME" ]]; then
+  echo "Tailnet FQDN: ${TAILNET_HOSTNAME}"
 fi
 
 # ── Step 6: Configure firewall ─────────────────
@@ -211,19 +222,24 @@ else
 fi
 
 # Wait for Tailscale HTTPS cert to be auto-provisioned
-echo "=== Waiting for HTTPS certificate provisioning (up to 60s) ==="
-HTTPS_OK=0
-for i in $(seq 1 12); do
-  if curl -skI "https://${TAILNET_HOSTNAME}/" 2>/dev/null | grep -q 'HTTP/'; then
-    echo "HTTPS certificate ready at https://${TAILNET_HOSTNAME}/"
-    HTTPS_OK=1
-    break
+if [[ -n "$TAILNET_HOSTNAME" ]]; then
+  echo "=== Waiting for HTTPS certificate provisioning (up to 60s) ==="
+  HTTPS_OK=0
+  for i in $(seq 1 12); do
+    if curl -skI "https://${TAILNET_HOSTNAME}/" 2>/dev/null | grep -q 'HTTP/'; then
+      echo "HTTPS certificate ready at https://${TAILNET_HOSTNAME}/"
+      HTTPS_OK=1
+      break
+    fi
+    echo "  Waiting for certificate... (${i}/12)"
+    sleep 5
+  done
+  if [[ "$HTTPS_OK" -eq 0 ]]; then
+    echo "NOTE: HTTPS cert may still be provisioning — check https://${TAILNET_HOSTNAME}/ shortly"
   fi
-  echo "  Waiting for certificate... (${i}/12)"
-  sleep 5
-done
-if [[ "$HTTPS_OK" -eq 0 ]]; then
-  echo "NOTE: HTTPS cert may still be provisioning — check https://${TAILNET_HOSTNAME}/ shortly"
+else
+  echo "NOTE: Skipping HTTPS check (tailnet domain not detected)."
+  echo "  Once you configure TAILNET_DOMAIN, access at: https://${TS_HOSTNAME}.<domain>/"
 fi
 
 # ── Step 13: Success summary ───────────────────
