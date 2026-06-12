@@ -182,7 +182,7 @@
       signature = await crypto.subtle.sign({ name: 'Ed25519' }, privKey, challengeBytes);
     } catch {
       // Fallback to @noble/curves
-      const { ed25519 } = await import('@noble/curves/ed25519');
+      const { ed25519 } = await import('@noble/curves');
       signature = ed25519.sign(challengeBytes, keys.authPriv);
     }
     const sigHex = bytesToHex(new Uint8Array(signature));
@@ -244,7 +244,7 @@
 
       // 5. Re-derive all keys (need public key too — fetch from server or regenerate)
       // For now, we regenerate the Ed25519 public key from the private key
-      const { ed25519 } = await import('@noble/curves/ed25519');
+      const { ed25519 } = await import('@noble/curves');
       const masterPub = ed25519.getPublicKey(masterPriv);
       const derived = await deriveKeys({ publicKey: masterPub, privateKey: masterPriv });
 

@@ -78,7 +78,7 @@ async function login(handle) {
     );
     signature = await crypto.subtle.sign({ name: 'Ed25519' }, privKey, challengeBytes);
   } catch {
-    const { ed25519 } = await import('@noble/curves/ed25519');
+    const { ed25519 } = await import('@noble/curves');
     signature = ed25519.sign(challengeBytes, keys.authPriv);
   }
   const sigHex = bytesToHex(new Uint8Array(signature));

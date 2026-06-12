@@ -32,7 +32,7 @@ async function ecdh(privKey, pubKey) {
     return new Uint8Array(secret);
   } catch {
     // Fallback to @noble/curves
-    const { x25519 } = await import('@noble/curves/x25519');
+    const { x25519 } = await import('@noble/curves');
     return x25519.getSharedSecret(privKey, pubKey);
   }
 }
@@ -125,7 +125,7 @@ export async function encryptMessage(plaintext, recipientX25519Pub, ownX25519Pri
   ephemeralPriv[31] &= 127;
   ephemeralPriv[31] |= 64;
 
-  const { x25519 } = await import('@noble/curves/x25519');
+  const { x25519 } = await import('@noble/curves');
   const ephemeralPub = x25519.getPublicKey(ephemeralPriv);
 
   // ECDH → shared secret
@@ -210,7 +210,7 @@ export async function encryptGroupKeyForMember(groupKey, memberX25519Pub, ownX25
   // Derive senderEphemeralPub from ownX25519Priv so the recipient can re-derive
   // the shared secret. Using @noble/curves directly avoids a Web Crypto ephemeral
   // keypair that would be mismatched with ownX25519Priv.
-  const { x25519 } = await import('@noble/curves/x25519');
+  const { x25519 } = await import('@noble/curves');
   const senderEphemeralPub = x25519.getPublicKey(ownX25519Priv);
 
   // Embed nonce as first 12 bytes of encryptedKey so decrypt can recover it
