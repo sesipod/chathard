@@ -99,7 +99,15 @@ fi
 echo "Enabling Tailscale Serve (HTTPS on 443 → localhost:3000)..."
 tailscale serve --bg --https 443 localhost:3000
 
-TAILNET_HOSTNAME="tailchat-server.${TAILNET_DOMAIN:-$(tailscale status --json 2>/dev/null | grep -o '"Domain":"[^"]*"' | cut -d'"' -f4)}"
+# Resolve tailnet domain from env var or tailscale status (handle empty grep safely)
+TAILNET_HOSTNAME="tailchat-server.${TAILNET_DOMAIN:-}"
+if [[ -z "${TAILNET_DOMAIN:-}" ]]; then
+  DOMAIN_JSON=$(tailscale status --json 2>/dev/null || true)
+  EXTRACTED=$(echo "$DOMAIN_JSON" | grep -o '"Domain":"[^"]*"' | cut -d'"' -f4 || true)
+  if [[ -n "$EXTRACTED" ]]; then
+    TAILNET_HOSTNAME="tailchat-server.$EXTRACTED"
+  fi
+fi
 
 # ── Step 6: Configure firewall ─────────────────
 echo "=== Configuring UFW ==="
@@ -154,7 +162,7 @@ echo "=== Building backend ==="
 if [[ -f /opt/tailchat/server/go.mod ]]; then
   cd /opt/tailchat/server
   export PATH="$PATH:/usr/local/go/bin"
-  go build -o /tmp/tailchat-server .
+  go build -buildvcs=false -o /tmp/tailchat-server .
   mv /tmp/tailchat-server /opt/tailchat/tailchat-server
   chown tailchat:tailchat /opt/tailchat/tailchat-server
   /opt/tailchat/tailchat-server --version

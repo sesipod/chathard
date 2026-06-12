@@ -98,7 +98,7 @@ chown -R tailchat:tailchat "${TAILCHAT_DIR}/web/dist"
 log "Building backend"
 cd "${TAILCHAT_DIR}/server"
 export PATH="$PATH:/usr/local/go/bin"
-go build -o /tmp/tailchat-server.new .
+go build -buildvcs=false -o /tmp/tailchat-server.new .
 mv /tmp/tailchat-server.new "${NEW_BIN}"
 chown tailchat:tailchat "${NEW_BIN}"
 
