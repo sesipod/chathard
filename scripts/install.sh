@@ -86,7 +86,8 @@ fi
 
 # Check if already connected (has a tailscale0 IP assigned)
 if tailscale status &>/dev/null && tailscale ip -4 &>/dev/null; then
-  echo "Tailscale is already connected — skipping tailscale up"
+  echo "Tailscale is already connected — re-authenticating to clear stale state..."
+  tailscale up --force-reauth --hostname=tailchat-server
 else
   if [[ -n "${TS_AUTH_KEY:-}" ]]; then
     tailscale up --auth-key="$TS_AUTH_KEY" --hostname=tailchat-server
@@ -98,6 +99,7 @@ fi
 
 echo "Enabling Tailscale Serve (HTTPS on 443 → localhost:3000)..."
 tailscale serve --bg --https 443 localhost:3000
+# Let serve auto-provision the cert — do NOT call tailscale cert separately
 
 # Resolve tailnet domain from env var or tailscale status (handle empty grep safely)
 TAILNET_HOSTNAME="tailchat-server.${TAILNET_DOMAIN:-}"
@@ -203,9 +205,25 @@ echo "=== Health check ==="
 sleep 2
 if curl -s http://localhost:3000/api/health; then
   echo ""
-  echo "Health check passed."
+  echo "Local health check passed."
 else
   echo "WARNING: Health check failed — check logs: journalctl -u tailchat -f" >&2
+fi
+
+# Wait for Tailscale HTTPS cert to be auto-provisioned
+echo "=== Waiting for HTTPS certificate provisioning (up to 60s) ==="
+HTTPS_OK=0
+for i in $(seq 1 12); do
+  if curl -skI "https://${TAILNET_HOSTNAME}/" 2>/dev/null | grep -q 'HTTP/'; then
+    echo "HTTPS certificate ready at https://${TAILNET_HOSTNAME}/"
+    HTTPS_OK=1
+    break
+  fi
+  echo "  Waiting for certificate... (${i}/12)"
+  sleep 5
+done
+if [[ "$HTTPS_OK" -eq 0 ]]; then
+  echo "NOTE: HTTPS cert may still be provisioning — check https://${TAILNET_HOSTNAME}/ shortly"
 fi
 
 # ── Step 13: Success summary ───────────────────
