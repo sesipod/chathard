@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -137,6 +138,37 @@ func main() {
 	// Recover endpoint (rate limited)
 	recoverHandler := handlers.NewRecoverHandler(queries)
 	mux.Handle("/api/recover", tailscaleAuth(rl.Middleware("recover", rl.Cfg().Recovery)(recoverHandler)))
+
+	// User search (Tailscale auth + rate limit, no session required — used during registration)
+	mux.Handle("/api/users/search", tailscaleAuth(rl.Middleware("search", rl.Cfg().UserSearch)(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			query := r.URL.Query().Get("handle")
+			if len(query) < 3 {
+				http.Error(w, "Query too short", http.StatusBadRequest)
+				return
+			}
+			limit := 20
+			if l := r.URL.Query().Get("limit"); l != "" {
+				if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 50 {
+					limit = n
+				}
+			}
+			users, err := queries.SearchUsers(query, limit)
+			if err != nil {
+				http.Error(w, "Search failed", http.StatusInternalServerError)
+				return
+			}
+			if users == nil {
+				users = []db.UserRow{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(users)
+		}),
+	)))
 
 	// Authenticated routes
 	authMux := http.NewServeMux()
