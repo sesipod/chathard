@@ -77,21 +77,29 @@ fi
 echo "Node version: $(node --version)"
 echo "npm version: $(npm --version)"
 
-# ── Step 5: Install Tailscale ──────────────────
-echo "=== Installing Tailscale ==="
+# ── Step 5: Tailscale ──────────────────────────
+echo "=== Tailscale ==="
 if ! command -v tailscale &>/dev/null; then
+  echo "Installing Tailscale..."
   curl -fsSL https://tailscale.com/install.sh | sh
 fi
 
-if [[ -n "$TS_AUTH_KEY" ]]; then
-  tailscale up --auth-key="$TS_AUTH_KEY" --hostname=tailchat-server
+# Check if already connected (has a tailscale0 IP assigned)
+if tailscale status &>/dev/null && tailscale ip -4 &>/dev/null; then
+  echo "Tailscale is already connected — skipping tailscale up"
 else
-  echo "WARNING: No TS_AUTH_KEY set. Starting interactive login..."
-  tailscale up --hostname=tailchat-server
+  if [[ -n "${TS_AUTH_KEY:-}" ]]; then
+    tailscale up --auth-key="$TS_AUTH_KEY" --hostname=tailchat-server
+  else
+    echo "WARNING: No TS_AUTH_KEY set. Starting interactive login..."
+    tailscale up --hostname=tailchat-server
+  fi
 fi
 
-TAILNET_HOSTNAME="tailchat-server.${TAILNET_DOMAIN:-$(tailscale status --json 2>/dev/null | grep -o '"Domain":"[^"]*"' | cut -d'"' -f4)}"
+echo "Enabling Tailscale Serve (HTTPS on 443 → localhost:3000)..."
 tailscale serve --bg --https 443 localhost:3000
+
+TAILNET_HOSTNAME="tailchat-server.${TAILNET_DOMAIN:-$(tailscale status --json 2>/dev/null | grep -o '"Domain":"[^"]*"' | cut -d'"' -f4)}"
 
 # ── Step 6: Configure firewall ─────────────────
 echo "=== Configuring UFW ==="
