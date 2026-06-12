@@ -4,6 +4,7 @@
     generateKeyPair,
     deriveKeys,
     generateRecoveryCodes,
+    formatRecoveryCode,
   } from '../lib/crypto/keygen.js';
   import { encryptMasterKeyWithCode } from '../lib/crypto/recover.js';
   import { storeKeyPair, loadKeyPair } from '../lib/db.js';
@@ -73,12 +74,13 @@
       const derived = await deriveKeys(masterKp);
 
       // 3. Generate 10 recovery codes and encrypt master key
-      const codes = await generateRecoveryCodes();
+      const codeBytes = generateRecoveryCodes();
+      const formattedCodes = codeBytes.map(bytes => formatRecoveryCode(bytes));
       const backups = [];
-      for (const code of codes) {
+      for (const code of formattedCodes) {
         const salt = crypto.getRandomValues(new Uint8Array(32));
         const encryptedKey = await encryptMasterKeyWithCode(masterKp.privateKey, code, salt);
-        // SHA-256 hash of the code for server-side verification
+        // SHA-256 hash of the formatted code for server-side verification
         const codeHashBytes = new Uint8Array(
           await crypto.subtle.digest('SHA-256', new TextEncoder().encode(code))
         );
@@ -123,7 +125,7 @@
 
       const data = await res.json();
       user_id = data.user_id;
-      recoveryCodes = codes;
+      recoveryCodes = formattedCodes;
       recoveryCodesShown = true;
 
       // Auto-login after showing codes
