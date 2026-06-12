@@ -46,9 +46,15 @@ apt install -y build-essential sqlite3 curl git ufw
 # ── Step 3: Install Go 1.23 ────────────────────
 echo "=== Installing Go 1.23 ==="
 if ! command -v go &>/dev/null || [[ "$(go version)" != *go1.23* ]]; then
-  curl -fsSL https://go.dev/dl/go1.23.linux-amd64.tar.gz -o /tmp/go1.23.linux-amd64.tar.gz
-  tar -C /usr/local -xzf /tmp/go1.23.linux-amd64.tar.gz
-  rm -f /tmp/go1.23.linux-amd64.tar.gz
+  # Fetch the latest Go 1.23.x patch version dynamically
+  GO_PATCH=$(curl -s https://go.dev/dl/?mode=json | grep -o '"version":"go1\.23\.[0-9]*"' | head -1 | grep -o '1\.23\.[0-9]*')
+  if [[ -z "$GO_PATCH" ]]; then
+    GO_PATCH="1.23.0" # fallback
+  fi
+  echo "Downloading Go ${GO_PATCH}..."
+  curl -fsSL "https://go.dev/dl/go${GO_PATCH}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
+  tar -C /usr/local -xzf /tmp/go.tar.gz
+  rm -f /tmp/go.tar.gz
   cat > /etc/profile.d/go.sh <<'GOEOF'
 export PATH=$PATH:/usr/local/go/bin
 GOEOF
