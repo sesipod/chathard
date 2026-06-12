@@ -23,7 +23,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@noble/curves/ed25519': path.join(nobleRoot, 'ed25519.js'),
-      '@noble/curves/x25519': path.join(nobleRoot, 'x25519.js'),
+      '@noble/curves/x25519': path.join(nobleRoot, 'ed25519.js'),
     },
   },
 });
