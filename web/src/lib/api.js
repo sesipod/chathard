@@ -109,7 +109,8 @@ const api = {
     const qs = params.toString();
     const res = await fetch(`/api/messages${qs ? `?${qs}` : ''}`, { headers: headers() });
     await throwIfNotOk(res);
-    return res.json();
+    const data = await res.json();
+    return data.messages || data; // server wraps in { messages: [...] }
   },
 
   async sendMessage({ recipientId, groupId, ciphertext, ephemeralPub, nonce }) {
@@ -159,7 +160,8 @@ const api = {
   async fetchConversations() {
     const res = await fetch('/api/conversations', { headers: headers() });
     await throwIfNotOk(res);
-    return res.json();
+    const data = await res.json();
+    return data.conversations || data; // server wraps in { conversations: [...] }
   },
 
   // ── Users ──
@@ -228,7 +230,8 @@ const api = {
   async fetchGroupMessages(groupId) {
     const res = await fetch(`/api/groups/${groupId}/messages`, { headers: headers() });
     await throwIfNotOk(res);
-    return res.json();
+    const data = await res.json();
+    return data.messages || data; // server wraps in { messages: [...] }
   },
 
   async fetchMyGroups() {
