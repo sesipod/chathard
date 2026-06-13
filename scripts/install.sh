@@ -167,6 +167,9 @@ else
   echo "============================================"
 fi
 
+# Ensure scripts are executable (rsync/git can lose the +x bit)
+chmod +x /opt/tailchat/scripts/install.sh /opt/tailchat/scripts/update.sh 2>/dev/null || true
+
 chown -R tailchat:tailchat /opt/tailchat
 
 # ── Step 10: Initial build ─────────────────────

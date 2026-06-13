@@ -53,6 +53,9 @@ log "New commit: ${COMMIT_HASH}"
 # Sync source to working directories
 rsync -a "${SERVER_SRC_DIR}/" "${TAILCHAT_DIR}/" --exclude=data --exclude='.git' --exclude=config.yaml
 
+# Ensure scripts are executable (rsync on some systems loses the +x bit)
+chmod +x "${TAILCHAT_DIR}/scripts/install.sh" "${TAILCHAT_DIR}/scripts/update.sh" 2>/dev/null || true
+
 # ── Step 2: Check DB migrations ────────────────
 log "Checking for pending DB migrations"
 
