@@ -33,16 +33,27 @@ export const messages = writable({});
 async function loadConversations() {
   try {
     const list = await api.fetchConversations();
-    // Ensure sorted by last message timestamp descending
-    list.sort((a, b) => {
-      const ta = a.last_message_at || a.created_at || '';
-      const tb = b.last_message_at || b.created_at || '';
-      return tb.localeCompare(ta);
+    // Deduplicate: if server list includes a user we already have as synthetic,
+    // merge their data (server version wins for last_message_at, unread_count)
+    conversations.update((existing) => {
+      const merged = [...list];
+      for (const existingConv of existing) {
+        const key = existingConv.user_id || existingConv.id;
+        const alreadyInList = merged.some((c) => (c.user_id || c.id) === key);
+        if (!alreadyInList) {
+          merged.push(existingConv);
+        }
+      }
+      // Sort by last message timestamp descending
+      merged.sort((a, b) => {
+        const ta = a.last_message_at || a.last_active || a.created_at || '';
+        const tb = b.last_message_at || b.last_active || b.created_at || '';
+        return tb.localeCompare(ta);
+      });
+      return merged;
     });
-    conversations.set(list);
   } catch (err) {
     console.error('Failed to load conversations:', err);
-    conversations.set([]);
   }
 }
 

@@ -8,6 +8,7 @@
   } from '../lib/crypto/keygen.js';
   import { encryptMasterKeyWithCode } from '../lib/crypto/recover.js';
   import { storeKeyPair, loadKeyPair } from '../lib/db.js';
+  import api from '../lib/api.js';
 
   /** @type {'register'|'login'|'recover'} */
   let mode = 'login';
@@ -211,10 +212,9 @@
 
     try {
       // 1. First, look up user by handle to get user_id
-      const searchRes = await fetch(`/api/users/search?handle=${encodeURIComponent(handle)}`);
-      const searchData = await searchRes.json();
-      const user = Array.isArray(searchData)
-        ? searchData.find((u) => u.handle === handle)
+      const users = await api.searchUsers(handle);
+      const user = Array.isArray(users)
+        ? users.find((u) => u.handle === handle)
         : null;
       if (!user) throw new Error('User not found');
 
@@ -587,9 +587,12 @@
   }
 
   .codes-list {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: 0.5rem;
+    max-height: 240px;
+    overflow-y: auto;
+    padding-right: 0.25rem;
   }
 
   .code-item {
