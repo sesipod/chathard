@@ -288,8 +288,21 @@
     const user = e.detail.user;
     showNewChat = false;
     const userId = user.id || user.uuid;
+    // Add the user as a synthetic conversation so it appears in the sidebar
+    chatStore.conversations.update((list) => {
+      const exists = list.some((c) => (c.id || c.user_id) === userId);
+      if (!exists) {
+        return [...list, {
+          id: userId,
+          user_id: userId,
+          handle: user.handle,
+          last_message_at: new Date().toISOString(),
+          unread_count: 0,
+        }];
+      }
+      return list;
+    });
     chatStore.setActiveConversation(userId);
-    chatStore.loadConversations();
     chatStore.loadMessages(userId);
   }
 

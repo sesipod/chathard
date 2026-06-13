@@ -126,9 +126,7 @@
       user_id = data.user_id;
       recoveryCodes = formattedCodes;
       recoveryCodesShown = true;
-
-      // Auto-login after showing codes
-      await performLogin();
+      // Login happens after user clicks "I've Saved These Codes"
     } catch (e) {
       error = e.message || 'Registration failed';
     } finally {
@@ -271,7 +269,15 @@
   }
 
   // ── Dismiss recovery codes and navigate ──
-  function dismissCodes() {
+  async function dismissCodes() {
+    loading = true;
+    try {
+      await performLogin();
+    } catch (e) {
+      error = e.message || 'Login failed';
+      loading = false;
+      return;
+    }
     recoveryCodesShown = false;
     push('/chat');
   }
