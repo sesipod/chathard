@@ -143,7 +143,7 @@ func (h *MessagesHandler) getMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var messages []db.MessageRow
+	messages := make([]db.MessageRow, 0)
 	var err error
 	if groupID != "" {
 		messages, err = h.queries.GetGroupMessages(groupID, after, before, limit)

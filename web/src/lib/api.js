@@ -110,7 +110,7 @@ const api = {
     const res = await fetch(`/api/messages${qs ? `?${qs}` : ''}`, { headers: headers() });
     await throwIfNotOk(res);
     const data = await res.json();
-    return data.messages || data; // server wraps in { messages: [...] }
+    return data.messages ?? []; // server wraps in { messages: [...] }, may be null
   },
 
   async sendMessage({ recipientId, groupId, ciphertext, ephemeralPub, nonce }) {
@@ -161,7 +161,7 @@ const api = {
     const res = await fetch('/api/conversations', { headers: headers() });
     await throwIfNotOk(res);
     const data = await res.json();
-    return data.conversations || data; // server wraps in { conversations: [...] }
+    return data.conversations ?? []; // server wraps in { conversations: [...] }, may be null
   },
 
   // ── Users ──
@@ -231,7 +231,7 @@ const api = {
     const res = await fetch(`/api/groups/${groupId}/messages`, { headers: headers() });
     await throwIfNotOk(res);
     const data = await res.json();
-    return data.messages || data; // server wraps in { messages: [...] }
+    return data.messages ?? []; // server wraps in { messages: [...] }, may be null
   },
 
   async fetchMyGroups() {

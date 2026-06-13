@@ -256,7 +256,7 @@ func (q *Queries) GetConversations(userID string) ([]ConversationRow, error) {
 	}
 	defer rows.Close()
 
-	var convs []ConversationRow
+	convs := make([]ConversationRow, 0)
 	for rows.Next() {
 		var c ConversationRow
 		if err := rows.Scan(&c.UserID, &c.Handle, &c.LastMessage, &c.UnreadCount, &c.LastActivity); err != nil {
