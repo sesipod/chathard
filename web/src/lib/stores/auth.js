@@ -66,8 +66,8 @@ async function login(handle) {
   const keys = await loadKeyPair();
   if (!keys) throw new Error('No cryptographic keys found. Please register or recover your account.');
 
-  // 1. Get challenge
-  const { challenge } = await api.challenge();
+  // 1. Get challenge (server generates random 32 bytes for this handle)
+  const { challenge } = await api.challenge(handle);
 
   // 2. Sign challenge with derived auth key
   const challengeBytes = hexToBytes(challenge);
@@ -83,8 +83,8 @@ async function login(handle) {
   }
   const sigHex = bytesToHex(new Uint8Array(signature));
 
-  // 3. Verify and get token
-  const { token, user_id } = await api.verify(sigHex);
+  // 3. Verify signature against the challenge and get session token
+  const { token, user_id } = await api.verify(handle, challenge, sigHex);
 
   // 4. Store in sessionStorage
   sessionStorage.setItem('tailchat-token', token);

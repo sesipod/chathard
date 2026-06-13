@@ -67,20 +67,21 @@ const api = {
   },
 
   // ── Auth ──
-  async challenge() {
+  async challenge(handle) {
     const res = await fetch('/api/auth/challenge', {
       method: 'POST',
       headers: headers(false),
+      body: JSON.stringify({ handle }),
     });
     await throwIfNotOk(res);
     return res.json(); // { challenge }
   },
 
-  async verify(signature) {
+  async verify(handle, challenge, signature) {
     const res = await fetch('/api/auth/verify', {
       method: 'POST',
       headers: headers(false),
-      body: JSON.stringify({ signature }),
+      body: JSON.stringify({ handle, challenge, signature }),
     });
     await throwIfNotOk(res);
     return res.json(); // { token, user_id }
