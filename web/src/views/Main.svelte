@@ -290,10 +290,10 @@
     const userId = user.id || user.uuid;
     // Add the user as a synthetic conversation so it appears in the sidebar
     chatStore.conversations.update((list) => {
-      const exists = list.some((c) => (c.id || c.user_id) === userId);
+      const exists = list.some((c) => (c.id || c.user_id) === userId || c.id === '_syn_' + userId);
       if (!exists) {
         return [...list, {
-          id: userId,
+          id: '_syn_' + userId,
           user_id: userId,
           handle: user.handle,
           last_message_at: new Date().toISOString(),

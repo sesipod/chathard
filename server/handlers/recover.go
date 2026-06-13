@@ -28,11 +28,22 @@ func (h *RecoverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		UserID           string `json:"user_id"`
+		Handle           string `json:"handle"`
 		RecoveryCodeHash string `json:"recovery_code_hash"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
+	}
+
+	// Resolve user_id from handle if user_id not provided
+	if req.UserID == "" && req.Handle != "" {
+		user, err := h.queries.GetUserByHandle(req.Handle)
+		if err != nil {
+			http.Error(w, "Invalid recovery code", http.StatusUnauthorized)
+			return
+		}
+		req.UserID = user.ID
 	}
 
 	if req.UserID == "" || req.RecoveryCodeHash == "" {

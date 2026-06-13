@@ -39,7 +39,8 @@ async function loadConversations() {
       const merged = [...list];
       for (const existingConv of existing) {
         const key = existingConv.user_id || existingConv.id;
-        const alreadyInList = merged.some((c) => (c.user_id || c.id) === key);
+        const synKey = existingConv.id && existingConv.id.startsWith('_syn_') ? existingConv.user_id : null;
+        const alreadyInList = merged.some((c) => (c.user_id || c.id) === key || (synKey && (c.user_id || c.id) === synKey));
         if (!alreadyInList) {
           merged.push(existingConv);
         }

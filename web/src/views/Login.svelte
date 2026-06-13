@@ -211,26 +211,17 @@
     error = '';
 
     try {
-      // 1. First, look up user by handle to get user_id
-      const users = await api.searchUsers(handle);
-      const user = Array.isArray(users)
-        ? users.find((u) => u.handle === handle)
-        : null;
-      if (!user) throw new Error('User not found');
-
-      const userId = user.id;
-
-      // 2. Hash recovery code
+      // 1. Hash recovery code
       const codeHashBytes = new Uint8Array(
         await crypto.subtle.digest('SHA-256', new TextEncoder().encode(recoveryCode))
       );
       const codeHash = bytesToHex(codeHashBytes);
 
-      // 3. Request encrypted key from server
+      // 2. Request encrypted key from server (server resolves user_id from handle)
       const recoverRes = await fetch('/api/recover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId, recovery_code_hash: codeHash }),
+        body: JSON.stringify({ handle, recovery_code_hash: codeHash }),
       });
       if (!recoverRes.ok) throw new Error('Invalid recovery code');
       const recoverData = await recoverRes.json();
