@@ -153,6 +153,12 @@ elif [[ -d "$(dirname "$0")/../server" && -d "$(dirname "$0")/../web" ]]; then
   echo "GIT_REPO not set, but detected repo at: $SCRIPT_DIR"
   echo "Copying files from $SCRIPT_DIR..."
   rsync -a "$SCRIPT_DIR/" /opt/tailchat/ --exclude=data --exclude=config.yaml
+  # Also clone to server-src for future update.sh usage
+  if [[ -d "$SCRIPT_DIR/.git" ]]; then
+    echo "Cloning repo to /opt/tailchat/server-src for future updates..."
+    git clone "$SCRIPT_DIR" /opt/tailchat/server-src 2>/dev/null || \
+      cp -r "$SCRIPT_DIR" /opt/tailchat/server-src
+  fi
 else
   echo "============================================"
   echo " GIT_REPO not set. Manually copy files:"

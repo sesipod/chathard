@@ -31,8 +31,20 @@ if [[ "${1:-}" == "--from-dir" && -n "${2:-}" ]]; then
   rsync -a "${SRC_DIR}/" "${SERVER_SRC_DIR}/"
 else
   log "Pulling latest code from git"
-  cd "${SERVER_SRC_DIR}"
-  git pull origin main
+  if [[ -d "${SERVER_SRC_DIR}/.git" ]]; then
+    cd "${SERVER_SRC_DIR}"
+    git pull origin master || git pull origin main
+  else
+    # server-src not found — try to clone from /opt/tailchat's git remote
+    log "server-src not found, cloning from /opt/tailchat git remote"
+    GIT_URL=$(cd "${TAILCHAT_DIR}" && git remote get-url origin 2>/dev/null || echo "")
+    if [[ -n "$GIT_URL" ]]; then
+      git clone "$GIT_URL" "${SERVER_SRC_DIR}"
+    else
+      log "ERROR: No git remote configured — use --from-dir to deploy"
+      exit 1
+    fi
+  fi
 fi
 
 COMMIT_HASH=$(cd "${SERVER_SRC_DIR}" && git log -1 --oneline 2>/dev/null || echo "unknown")
