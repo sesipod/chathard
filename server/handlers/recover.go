@@ -4,7 +4,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
+	"strings"
 
 	"github.com/stuckpacket/tailchat/db"
 )
@@ -38,8 +40,9 @@ func (h *RecoverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve user_id from handle if user_id not provided
 	if req.UserID == "" && req.Handle != "" {
-		user, err := h.queries.GetUserByHandle(req.Handle)
+		user, err := h.queries.GetUserByHandle(strings.TrimSpace(req.Handle))
 		if err != nil {
+			log.Printf("recover: user not found by handle %q: %v", req.Handle, err)
 			http.Error(w, "Invalid recovery code", http.StatusUnauthorized)
 			return
 		}

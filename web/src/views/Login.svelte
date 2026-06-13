@@ -223,7 +223,10 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ handle, recovery_code_hash: codeHash }),
       });
-      if (!recoverRes.ok) throw new Error('Invalid recovery code');
+      if (!recoverRes.ok) {
+        const errText = await recoverRes.text();
+        throw new Error(errText || 'Invalid recovery code');
+      }
       const recoverData = await recoverRes.json();
 
       // 4. Decrypt master key
