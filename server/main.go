@@ -301,10 +301,21 @@ func tailscaleAuth(next http.Handler) http.Handler {
 }
 
 // sessionAuth is the second auth layer: validates session token for authenticated routes.
+// Accepts token via Authorization: Bearer header (REST) or ?token query param (WebSocket).
 func sessionAuth(queries *db.Queries) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token := r.Header.Get("Authorization")
+			authHeader := r.Header.Get("Authorization")
+			var token string
+
+			// Try Authorization header first, then ?token query param (for WebSocket)
+			const bearer = "Bearer "
+			if strings.HasPrefix(authHeader, bearer) {
+				token = authHeader[len(bearer):]
+			} else if tok := r.URL.Query().Get("token"); tok != "" {
+				token = tok
+			}
+
 			if token == "" {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
