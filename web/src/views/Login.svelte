@@ -253,7 +253,6 @@
       });
 
       // 7. Login with restored keys
-      handle = user.handle;
       await performLogin();
     } catch (e) {
       error = e.message || 'Recovery failed';
