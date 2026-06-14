@@ -312,6 +312,8 @@ func (q *Queries) GetConversations(userID string) ([]ConversationRow, error) {
 		if err := rows.Scan(&c.UserID, &c.Handle, &c.LastMessage, &c.UnreadCount, &c.LastActivity, &c.ExpiresAt); err != nil {
 			return nil, err
 		}
+		normalizeTimestamp(&c.LastActivity)
+		normalizeTimestamp(c.ExpiresAt)
 		convs = append(convs, c)
 	}
 	return convs, rows.Err()
@@ -402,6 +404,7 @@ func (q *Queries) GetUserGroupsWithActivity(userID string) ([]GroupWithActivity,
 		if err := rows.Scan(&g.ID, &g.EncryptedName, &g.EncryptedSymmetricKey, &g.CreatedAt, &g.LastActive); err != nil {
 			return nil, err
 		}
+		normalizeTimestamp(&g.LastActive)
 		groups = append(groups, g)
 	}
 	return groups, rows.Err()
@@ -603,11 +606,26 @@ func scanUser(s interface{ Scan(dest ...interface{}) error }) (*UserRow, error) 
 	return u, nil
 }
 
+// normalizeTimestamp converts SQLite datetime('now') format ("2026-06-14 05:36:00")
+// to RFC 3339 ("2026-06-14T05:36:00Z") so JavaScript can parse it as UTC.
+func normalizeTimestamp(s *string) {
+	if s == nil || *s == "" {
+		return
+	}
+	t := *s
+	if len(t) == 19 && t[10] == ' ' {
+		*s = t[:10] + "T" + t[11:] + "Z"
+	}
+}
+
 func scanMessage(s interface{ Scan(dest ...interface{}) error }) (*MessageRow, error) {
 	m := &MessageRow{}
 	if err := s.Scan(&m.ID, &m.SenderID, &m.RecipientID, &m.GroupID, &m.Ciphertext, &m.EphemeralPubKey, &m.Nonce, &m.CreatedAt, &m.ExpiresAt, &m.ReadAt); err != nil {
 		return nil, err
 	}
+	normalizeTimestamp(&m.CreatedAt)
+	normalizeTimestamp(m.ExpiresAt)
+	normalizeTimestamp(m.ReadAt)
 	return m, nil
 }
 
