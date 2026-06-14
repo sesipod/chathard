@@ -21,7 +21,9 @@ func NewGroupsHandler(queries *db.Queries) *GroupsHandler {
 
 // ServeHTTP routes group endpoints.
 func (h *GroupsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Handle both /api/groups/xxx and groups/xxx (mux may strip /api/)
 	path := strings.TrimPrefix(r.URL.Path, "/api/groups")
+	path = strings.TrimPrefix(path, "/groups")
 	path = strings.TrimPrefix(path, "/")
 
 	// GET /api/groups — list user's groups

@@ -29,9 +29,10 @@ func NewFilesHandler(queries *db.Queries, store *storage.BlobStore, maxSize int6
 
 // ServeHTTP routes file endpoints.
 func (h *FilesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Parse /api/files/{id} from path
+	// Parse path — handle both /api/files/xxx and files/xxx (mux may strip /api/)
 	path := strings.TrimPrefix(r.URL.Path, "/api/files")
-	path = strings.TrimPrefix(path, "/")
+	path = strings.TrimPrefix(path, "/files")
+	path = strings.TrimLeft(path, "/")
 
 	switch {
 	case r.Method == http.MethodPost && path == "upload":
