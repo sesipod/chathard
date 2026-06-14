@@ -23,8 +23,22 @@
     return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
 
+  /** Get display content from a message, decoding base64 ciphertext if possible. */
+  function getContent(msg) {
+    if (msg.content) return msg.content;
+    if (!msg.ciphertext) return '';
+    try {
+      const bytes = typeof msg.ciphertext === 'string'
+        ? Uint8Array.from(atob(msg.ciphertext), c => c.charCodeAt(0))
+        : new Uint8Array(msg.ciphertext);
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      return '🔒 Encrypted';
+    }
+  }
+
   $: timeStr = formatTime(message.created_at);
-  $: content = message.content || message.ciphertext || '';
+  $: content = getContent(message);
   $: isSystem = !!message.is_system;
   $: status = message.status || 'sent';
 
