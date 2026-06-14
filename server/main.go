@@ -194,10 +194,15 @@ func main() {
 	authMux.Handle("/api/messages", rl.Middleware("messages", rl.Cfg().Messages)(msgHandler))
 	authMux.Handle("/api/messages/", rl.Middleware("messages", rl.Cfg().Messages)(msgHandler))
 	authMux.Handle("/api/conversations", msgHandler)
+	// Fallback: mux strips /api/ prefix, so also register without it
+	authMux.Handle("/messages", rl.Middleware("messages", rl.Cfg().Messages)(msgHandler))
+	authMux.Handle("/messages/", rl.Middleware("messages", rl.Cfg().Messages)(msgHandler))
+	authMux.Handle("/conversations", msgHandler)
 
 	// WebSocket
 	wsHandler := handlers.NewWSHandler()
 	authMux.Handle("/api/ws", wsHandler)
+	authMux.Handle("/ws", wsHandler)
 	// Also handle /ws directly (spec says GET /ws)
 	mux.Handle("/ws", tailscaleAuth(sessionAuth(queries)(wsHandler)))
 
@@ -205,11 +210,14 @@ func main() {
 	maxUpload := parseSize(cfg.Storage.MaxUploadSize)
 	fileHandler := handlers.NewFilesHandler(queries, blobStore, maxUpload)
 	authMux.Handle("/api/files/", fileHandler)
+	authMux.Handle("/files/", fileHandler)
 
 	// Groups
 	groupHandler := handlers.NewGroupsHandler(queries)
 	authMux.Handle("/api/groups", groupHandler)
 	authMux.Handle("/api/groups/", groupHandler)
+	authMux.Handle("/groups", groupHandler)
+	authMux.Handle("/groups/", groupHandler)
 
 	// Wrap auth routes with session auth + rate limiting
 	mux.Handle("/api/", tailscaleAuth(sessionAuth(queries)(authMux)))
