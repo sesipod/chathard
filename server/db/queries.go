@@ -356,10 +356,10 @@ func (q *Queries) DeleteFile(id string) error {
 
 // ─── Recovery ─────────────────────────────────────────────────────────────────
 
-func (q *Queries) InsertRecoveryBackup(userID, recoveryCodeHash string, encryptedPrivateKey, salt []byte) error {
+func (q *Queries) InsertRecoveryBackup(userID, recoveryCodeHash string, encryptedPrivateKey, salt, authSalt []byte) error {
 	_, err := q.db.Exec(
-		`INSERT INTO encrypted_key_backups (user_id, recovery_code_hash, encrypted_private_key, salt) VALUES (?, ?, ?, ?)`,
-		userID, recoveryCodeHash, encryptedPrivateKey, salt,
+		`INSERT INTO encrypted_key_backups (user_id, recovery_code_hash, encrypted_private_key, salt, auth_salt) VALUES (?, ?, ?, ?, ?)`,
+		userID, recoveryCodeHash, encryptedPrivateKey, salt, authSalt,
 	)
 	return err
 }
@@ -385,7 +385,7 @@ func (q *Queries) MarkCodeUsed(userID, recoveryCodeHash string) error {
 // Used for constant-time comparison in the recover handler.
 func (q *Queries) GetUnusedRecoveryBackups(userID string) ([]RecoveryBackupRow, error) {
 	rows, err := q.db.Query(
-		`SELECT recovery_code_hash, encrypted_private_key, salt FROM encrypted_key_backups WHERE user_id = ? AND used = 0`,
+		`SELECT recovery_code_hash, encrypted_private_key, salt, auth_salt FROM encrypted_key_backups WHERE user_id = ? AND used = 0`,
 		userID,
 	)
 	if err != nil {
@@ -396,7 +396,7 @@ func (q *Queries) GetUnusedRecoveryBackups(userID string) ([]RecoveryBackupRow, 
 	var backups []RecoveryBackupRow
 	for rows.Next() {
 		var b RecoveryBackupRow
-		if err := rows.Scan(&b.RecoveryCodeHash, &b.EncryptedPrivateKey, &b.Salt); err != nil {
+		if err := rows.Scan(&b.RecoveryCodeHash, &b.EncryptedPrivateKey, &b.Salt, &b.AuthSalt); err != nil {
 			return nil, err
 		}
 		backups = append(backups, b)
@@ -498,6 +498,7 @@ type RecoveryBackupRow struct {
 	RecoveryCodeHash   string
 	EncryptedPrivateKey []byte
 	Salt               []byte
+	AuthSalt           []byte
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

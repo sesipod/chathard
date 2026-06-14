@@ -69,7 +69,7 @@ func (h *RecoverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reqHash = make([]byte, 32)
 	}
 
-	var encryptedKey, salt []byte
+	var encryptedKey, salt, authSalt []byte
 	var matchedHash string
 	for _, b := range backups {
 		storedHash, _ := hex.DecodeString(b.RecoveryCodeHash)
@@ -79,6 +79,7 @@ func (h *RecoverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare(reqHash, storedHash) == 1 {
 			encryptedKey = b.EncryptedPrivateKey
 			salt = b.Salt
+			authSalt = b.AuthSalt
 			matchedHash = b.RecoveryCodeHash
 			break
 		}
@@ -99,5 +100,6 @@ func (h *RecoverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"encrypted_private_key": hex.EncodeToString(encryptedKey),
 		"salt":                  hex.EncodeToString(salt),
+		"auth_salt":             hex.EncodeToString(authSalt),
 	})
 }

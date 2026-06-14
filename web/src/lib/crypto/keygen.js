@@ -140,17 +140,18 @@ async function ed25519PubToX25519(edPub) {
  *   Ed25519 key never leaves IndexedDB (key blinding).
  *
  * @param {Keypair} ed25519Keypair - The master Ed25519 keypair.
+ * @param {Uint8Array|null} salt - Optional auth salt for recovery; random if omitted.
  * @returns {Promise<{x25519Pub: Uint8Array, x25519Priv: Uint8Array, authPub: Uint8Array, authPriv: Uint8Array, authSalt: Uint8Array}>}
  */
-export async function deriveKeys(ed25519Keypair) {
+export async function deriveKeys(ed25519Keypair, salt = null) {
   const { publicKey: edPub, privateKey: edPriv } = ed25519Keypair;
 
   // 1. X25519 keypair
   const x25519Priv = ed25519PrivToX25519(edPriv);
   const x25519Pub = await ed25519PubToX25519(edPub);
 
-  // 2. HKDF-derived auth keypair
-  const authSalt = crypto.getRandomValues(new Uint8Array(32));
+  // 2. HKDF-derived auth keypair (salt is passed in or randomly generated)
+  const authSalt = salt != null ? salt : crypto.getRandomValues(new Uint8Array(32));
   const authIkm = new Uint8Array(edPriv.length + edPub.length);
   authIkm.set(edPriv);
   authIkm.set(edPub, edPriv.length);

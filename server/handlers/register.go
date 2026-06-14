@@ -20,6 +20,7 @@ type EncryptedKeyBackup struct {
 	RecoveryCodeHash     string `json:"recovery_code_hash"`
 	EncryptedPrivateKey  []byte `json:"encrypted_private_key"`
 	Salt                 []byte `json:"salt"`
+	AuthSalt             []byte `json:"auth_salt"`
 }
 
 // RegisterHandler handles POST /api/register.
@@ -72,7 +73,7 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Store encrypted key backups
 	for _, kb := range req.EncryptedKeyBackups {
-		if err := h.queries.InsertRecoveryBackup(userID, kb.RecoveryCodeHash, kb.EncryptedPrivateKey, kb.Salt); err != nil {
+		if err := h.queries.InsertRecoveryBackup(userID, kb.RecoveryCodeHash, kb.EncryptedPrivateKey, kb.Salt, kb.AuthSalt); err != nil {
 			// Continue even if one fails
 			continue
 		}

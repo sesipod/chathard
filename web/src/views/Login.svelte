@@ -92,6 +92,7 @@
           recovery_code_hash: codeHash,
           encrypted_private_key: Array.from(encryptedKey),
           salt: Array.from(salt),
+          auth_salt: Array.from(derived.authSalt),
         });
       }
       // 4. Store keys locally
@@ -232,14 +233,14 @@
       // 4. Decrypt master key
       const encryptedKey = hexToBytes(recoverData.encrypted_private_key);
       const salt = hexToBytes(recoverData.salt);
+      const authSalt = hexToBytes(recoverData.auth_salt);
       const { decryptMasterKeyWithCode } = await import('../lib/crypto/recover.js');
       const masterPriv = await decryptMasterKeyWithCode(encryptedKey, recoveryCode, salt);
 
-      // 5. Re-derive all keys (need public key too — fetch from server or regenerate)
-      // For now, we regenerate the Ed25519 public key from the private key
+      // 5. Re-derive all keys using the stored auth_salt (critical for matching server)
       const { ed25519 } = await import('@noble/curves/ed25519');
       const masterPub = ed25519.getPublicKey(masterPriv);
-      const derived = await deriveKeys({ publicKey: masterPub, privateKey: masterPriv });
+      const derived = await deriveKeys({ publicKey: masterPub, privateKey: masterPriv }, authSalt);
 
       // 6. Store restored keys
       await storeKeyPair({

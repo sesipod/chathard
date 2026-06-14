@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS encrypted_key_backups (
     recovery_code_hash  TEXT NOT NULL,
     encrypted_private_key BLOB NOT NULL,
     salt                BLOB NOT NULL,
+    auth_salt           BLOB NOT NULL,
     used                INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, recovery_code_hash)
 );
