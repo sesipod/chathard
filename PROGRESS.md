@@ -2,24 +2,26 @@
 
 ## Completed
 
-(none yet)
+- [x] Task-001: Create `message_deletions` table + queries (commit: 5ecaab0)
+- [x] Task-002: Add `POST /api/messages/hide` + `POST /api/messages/batch-hide` (commit: 9cb6f00)
 
 ## Current Iteration
 
-- Iteration: 1
-- Working on: Task-001: Create `message_deletions` table + queries
+- Iteration: 2
+- Working on: Task-002: Add `POST /api/messages/hide` + `POST /api/messages/batch-hide`
 - Started: 2026-06-14
 
 ## Last Completed
 
-- Task-001: Create `message_deletions` table + queries
-- Duration: ~5 minutes
+- Task-002: Add `POST /api/messages/hide` + `POST /api/messages/batch-hide`
+- Duration: ~3 minutes
+- Tests: N/A
 - Build: ✅ All passing
 - Key decisions:
-  - `HideMessages` uses transaction + prepared statement for batch inserts
-  - `GetHiddenMessageIDs` returns empty slice (not nil) to match existing patterns
-  - `GetGroupMessagesWithRetention` signature changed: added `userID` as first param
-  - Updated call sites in `messages.go` and `groups.go` handlers
+  - Routes added BEFORE `/api/messages` catch-all in ServeHTTP switch
+  - Request structs `hideMessageReq` and `batchHideMessageReq` follow existing patterns
+  - Both return 204 No Content on success
+  - Input validation for empty message_id/message_ids
 
 ## Blockers
 
@@ -27,6 +29,5 @@
 
 ## Notes for Next Iteration
 
-- Task-002 depends on Task-001 — handlers for hide/batch-hide endpoints
-- `GetGroupMessagesWithRetention` now takes `userID` param — keep in mind for future callers
-- New query functions available: `HideMessage`, `HideMessages`, `GetHiddenMessageIDs`
+- Task-003 depends on Task-002 — client-side single message delete
+- `HideMessage` / `HideMessages` query functions are now wired to HTTP endpoints

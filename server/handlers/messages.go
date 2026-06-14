@@ -69,6 +69,18 @@ func NewMessagesHandler(queries *db.Queries) *MessagesHandler {
 // ServeHTTP routes message sub-paths.
 func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
+	case "/api/messages/hide", "/messages/hide":
+		if r.Method == http.MethodPost {
+			h.hideMessage(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	case "/api/messages/batch-hide", "/messages/batch-hide":
+		if r.Method == http.MethodPost {
+			h.batchHideMessages(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
 	case "/api/messages", "/messages":
 		switch r.Method {
 		case http.MethodPost:
@@ -384,4 +396,56 @@ func (h *MessagesHandler) getConversations(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"conversations": result,
 	})
+}
+
+type hideMessageReq struct {
+	MessageID string `json:"message_id"`
+}
+
+func (h *MessagesHandler) hideMessage(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(CtxKeyUserID).(string)
+
+	var req hideMessageReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.MessageID == "" {
+		http.Error(w, "message_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.queries.HideMessage(userID, req.MessageID); err != nil {
+		http.Error(w, "Failed to hide message", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type batchHideMessageReq struct {
+	MessageIDs []string `json:"message_ids"`
+}
+
+func (h *MessagesHandler) batchHideMessages(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(CtxKeyUserID).(string)
+
+	var req batchHideMessageReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.MessageIDs) == 0 {
+		http.Error(w, "message_ids is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.queries.HideMessages(userID, req.MessageIDs); err != nil {
+		http.Error(w, "Failed to hide messages", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
