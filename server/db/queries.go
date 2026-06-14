@@ -465,16 +465,16 @@ type SessionRow struct {
 }
 
 type MessageRow struct {
-	ID                string
-	SenderID          string
-	RecipientID       *string
-	GroupID           *string
-	Ciphertext        []byte
-	EphemeralPubKey   []byte
-	Nonce             []byte
-	CreatedAt         string
-	ExpiresAt         *string
-	ReadAt            *string
+	ID                string  `json:"id"`
+	SenderID          string  `json:"sender_id"`
+	RecipientID       *string `json:"recipient_id"`
+	GroupID           *string `json:"group_id"`
+	Ciphertext        []byte  `json:"ciphertext"`
+	EphemeralPubKey   []byte  `json:"ephemeral_public_key"`
+	Nonce             []byte  `json:"nonce"`
+	CreatedAt         string  `json:"created_at"`
+	ExpiresAt         *string `json:"expires_at"`
+	ReadAt            *string `json:"read_at"`
 }
 
 type GroupRow struct {
