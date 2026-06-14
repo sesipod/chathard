@@ -195,6 +195,14 @@ func (q *Queries) GetMessages(recipientID, groupID string, after, before *time.T
 }
 
 func (q *Queries) MarkConversationRead(userID, conversationWith string, upToMsgID string) error {
+	if upToMsgID == "" {
+		// Mark ALL messages from this conversation partner as read
+		_, err := q.db.Exec(
+			`UPDATE messages SET read_at = datetime('now') WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)) AND read_at IS NULL`,
+			conversationWith, userID, userID, conversationWith,
+		)
+		return err
+	}
 	_, err := q.db.Exec(
 		`UPDATE messages SET read_at = datetime('now') WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)) AND id <= ? AND read_at IS NULL`,
 		conversationWith, userID, userID, conversationWith, upToMsgID,
