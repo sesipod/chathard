@@ -118,7 +118,7 @@ func (h *MessagesHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 
 	var expiresAt *time.Time
 	if req.ExpiresIn != "" {
-		d, err := time.ParseDuration(req.ExpiresIn)
+		d, err := parseDuration(req.ExpiresIn)
 		if err != nil {
 			http.Error(w, "Invalid expires_in", http.StatusBadRequest)
 			return
