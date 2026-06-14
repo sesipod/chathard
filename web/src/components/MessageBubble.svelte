@@ -17,7 +17,7 @@
   export let dateText = '';
   export let convId = '';
 
-  import { getAutoShowImages } from '../lib/stores/settings.js';
+  import { getAutoShowImages, imageSettingsVersion } from '../lib/stores/settings.js';
 
   /** Format a timestamp into a short time string like "10:42 AM". */
   function formatTime(iso) {
@@ -47,8 +47,9 @@
   $: fileId = fileMatch ? fileMatch[2] : '';
   $: displayContent = isFile ? `📎 ${fileName}` : content;
   $: isImage = fileMatch && /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(fileName);
-  $: shouldAutoLoad = isImage && getAutoShowImages(convId || 'default');
-  let imageUrl = '';
+  // Use comma operator so store subscription forces re-evaluation on toggle
+  $: showImages = ($imageSettingsVersion, getAutoShowImages(convId || 'default'));
+  $: shouldAutoLoad = isImage && showImages;
   let imageLoaded = false;
   let imageError = false;
   let lightbox = false;
