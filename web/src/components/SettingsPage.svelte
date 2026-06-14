@@ -37,7 +37,15 @@
   function editRet(c) { editingRetentionConv = c; editingRetentionValue = c.expires_in || 'Never'; editingRetentionConv = editingRetentionConv; }
   async function saveRet() {
     if (!editingRetentionConv) return;
-    try { await api.updateRetention({ conversationWith: editingRetentionConv.user_id || editingRetentionConv.id, expiresIn: editingRetentionValue === 'Never' ? '' : editingRetentionValue }); } catch {}
+    const isGroup = editingRetentionConv.type === 'group';
+    const convId = editingRetentionConv.user_id || editingRetentionConv.id;
+    try {
+      await api.updateRetention({
+        conversationWith: isGroup ? null : convId,
+        groupId: isGroup ? convId : null,
+        expiresIn: editingRetentionValue === 'Never' ? '' : editingRetentionValue,
+      });
+    } catch {}
     editingRetentionConv = null;
     editingRetentionConv = editingRetentionConv; // trigger reactivity
     dispatch('retention-changed');

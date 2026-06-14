@@ -374,9 +374,12 @@
   // ── Retention ──
   async function handleRetention(e) {
     const { conversationId, expiresIn } = e.detail;
+    const conv = $activeConversation;
+    const isGroup = conv?.type === 'group';
     try {
       await api.updateRetention({
-        conversationWith: conversationId,
+        conversationWith: isGroup ? null : conversationId,
+        groupId: isGroup ? conversationId : null,
         expiresIn: expiresIn || '',
       });
       await chatStore.loadConversations();
