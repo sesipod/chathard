@@ -135,8 +135,8 @@ func (h *Hub) NotifyReadReceipt(fromUserID, conversationWith, groupID, upToMsgID
 }
 
 func (h *Hub) sendToUser(userID string, payload WSPayload) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if conns, ok := h.connections[userID]; ok {
 		for conn := range conns {
 			if err := conn.WriteJSON(payload); err != nil {
@@ -149,13 +149,17 @@ func (h *Hub) sendToUser(userID string, payload WSPayload) {
 }
 
 func (h *Hub) broadcast(payload WSPayload) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	for _, conns := range h.connections {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for userID, conns := range h.connections {
 		for conn := range conns {
 			if err := conn.WriteJSON(payload); err != nil {
 				conn.Close()
+				delete(conns, conn)
 			}
+		}
+		if len(conns) == 0 {
+			delete(h.connections, userID)
 		}
 	}
 }

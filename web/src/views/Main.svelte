@@ -109,9 +109,10 @@
           // Reload conversations and messages to get full encrypted content
           // For 1:1, convId is the sender's ID. For groups, it's the group_id.
           const convId = data.group_id || data.sender_id;
+          const isGroup = !!data.group_id;
           if (convId) {
             chatStore.loadConversations();
-            chatStore.loadMessages(convId);
+            chatStore.loadMessagesWithType(convId, isGroup);
           }
           break;
         }

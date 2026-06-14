@@ -63,9 +63,15 @@ async function loadMessages(convId) {
   if (!convId) return;
   // Determine if this is a direct conversation or group
   const conv = getConversationSync(convId);
+  await loadMessagesWithType(convId, conv && conv.type === 'group');
+}
+
+/** Fetch messages with explicit conversation type hint (from WS payload). */
+async function loadMessagesWithType(convId, isGroup) {
+  if (!convId) return;
   let msgs;
   try {
-    if (conv && conv.type === 'group') {
+    if (isGroup) {
       msgs = await api.fetchGroupMessages(convId);
     } else {
       msgs = await api.fetchMessages({ withUserId: convId });
@@ -159,6 +165,7 @@ export const chatStore = {
   activeConversation,
   loadConversations,
   loadMessages,
+  loadMessagesWithType,
   addMessage,
   markAsRead,
   setActiveConversation,
