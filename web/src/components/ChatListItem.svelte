@@ -48,9 +48,11 @@
     ? conversation.last_message_preview.length > 60
       ? conversation.last_message_preview.slice(0, 60) + '…'
       : conversation.last_message_preview
-    : conversation.last_message_at
-      ? 'New message'
-      : 'No messages yet';
+    : hasUnread
+      ? `${unread} new message${unread > 1 ? 's' : ''}`
+      : conversation.last_message_at
+        ? ''
+        : 'No messages yet';
 
   /** Determine group/1:1 type indicator. */
   $: typeIndicator = conversation.type === 'group' ? '# ' : '';
