@@ -175,35 +175,54 @@ Add a multi-select mode to the conversation view that lets users select multiple
 
 ---
 
-### Task-005: Add `GET /api/conversations/:id/files` endpoint
+### Task-005: Add conversation tracking to files + `GET /api/conversations/:id/files` endpoint
 
 **Priority**: Medium
-**Depends on**: Nothing
+**Depends on**: Nothing (no dependency on Tasks 001-004)
 
-Add a server-side endpoint that returns all files shared in a conversation by scanning messages for file references.
+**Important**: Messages are stored as encrypted ciphertext — the server CANNOT read file references from message content. Instead, we must track which conversation a file belongs to at upload time.
 
-**Current state**: The `files` table has no `conversation_id` column. Files are shared by sending a message like `📎 filename (file_id)`. The file record only has `uploader_id`.
+Add conversation tracking to file uploads and a new endpoint to list files by conversation.
 
-**Implementation**: Parse existing messages in a conversation to extract file references. The message pattern is `📎 filename (32-char-hex-uuid)`. Extract the file IDs, then fetch file metadata. No schema change needed.
+**Implementation**:
 
-1. Add query functions to `server/db/queries.go`:
-   - `GetConversationFileRefs(userID, otherUserID string)` — for 1:1, scan messages for `📎` pattern, extract file IDs
-   - `GetGroupFileRefs(groupID string)` — for groups, same scanning
-   - Both should filter by `message_deletions` so hidden files don't appear
+1. **Create `server/db/migrations/006_file_conversations.sql`:**
+   ```sql
+   ALTER TABLE files ADD COLUMN target_id TEXT;
+   ALTER TABLE files ADD COLUMN target_type TEXT CHECK(target_type IN ('direct', 'group'));
+   ```
+   Note: SQLite doesn't support CHECK with ALTER TABLE on older versions — verify. If it fails, skip CHECK and enforce in application code.
 
-2. Add handler in `server/handlers/messages.go`:
-   - Route: `GET /api/conversations/{id}/files`
-   - Query param: `type=direct|group`
-   - Returns `{ files: [...] }` with file metadata
+2. **Update `server/db/schema.sql`** to include `target_id` and `target_type` columns in the `files` CREATE TABLE.
 
-3. Register in `server/main.go` on the authenticated mux.
+3. **Update upload handler** (`server/handlers/files.go`):
+   - Add `target_id` and `target_type` fields to both multipart and JSON upload paths
+   - Pass them to `InsertFile`
+
+4. **Update `InsertFile` query** to accept and store `targetID` and `targetType`.
+
+5. **Add query functions to `server/db/queries.go`:**
+   - `GetConversationFiles(targetID, targetType string) ([]FileRow, error)` — returns files for a conversation
+   - Must verify the requesting user is a participant (check via messages table or group membership)
+
+6. **Add handler** routing in `server/handlers/messages.go` or `server/handlers/files.go`:
+   - `GET /api/conversations/{id}/files?type=direct|group`
+   - Auth check: user must have messages with the target (1:1) or be a group member (group)
+   - Returns `{ files: [...] }`
+
+7. **Register in `server/main.go`** on the authenticated mux.
+
+8. **Update `web/src/lib/api.js`**:
+   - `uploadFile(file, expiresIn, targetId, targetType)` — add `target_id` and `target_type` to form data
+   - `fetchConversationFiles(convId, isGroup)` — new method
 
 **Acceptance Criteria**:
-- [ ] `GET /api/conversations/{id}/files?type=direct` returns files shared in a 1:1 conversation
-- [ ] `GET /api/conversations/{id}/files?type=group` returns files shared in a group
-- [ ] Each file entry includes: `id`, `uploader_id`, `size_bytes`, `created_at`
-- [ ] Hidden files (deleted by user) are excluded
-- [ ] Only participants can access (auth check)
+- [ ] Migration file exists with target_id and target_type columns
+- [ ] Files uploaded from a conversation are tagged with the conversation ID
+- [ ] `GET /api/conversations/{id}/files?type=direct` returns files for a 1:1 conversation
+- [ ] `GET /api/conversations/{id}/files?type=group` returns files for a group
+- [ ] Auth check: only conversation participants can list files
+- [ ] Hidden files (message_deletions) are excluded
 - [ ] Build passes
 
 ---

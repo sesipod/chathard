@@ -70,7 +70,9 @@ CREATE TABLE IF NOT EXISTS files (
     encrypted_metadata  BLOB NOT NULL,
     size_bytes          INTEGER NOT NULL,
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at          TEXT
+    expires_at          TEXT,
+    target_id           TEXT,
+    target_type         TEXT
 );
 
 -- Per-user retention: each user controls what THEY see, without affecting others.

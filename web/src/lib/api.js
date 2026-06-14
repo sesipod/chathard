@@ -269,18 +269,31 @@ const api = {
   },
 
   // ── Files ──
-  async uploadFile(file, expiresIn) {
+  async uploadFile(file, expiresIn, targetId, targetType) {
     const form = new FormData();
     form.append('file', file);
     form.append('encrypted_metadata', '');
     if (expiresIn) {
       form.append('expires_in', expiresIn);
     }
+    if (targetId) {
+      form.append('target_id', targetId);
+    }
+    if (targetType) {
+      form.append('target_type', targetType);
+    }
     const res = await fetch('/api/files/upload', {
       method: 'POST',
       headers: { Authorization: `Bearer ${getToken()}` }, // no Content-Type — browser sets multipart
       body: form,
     });
+    await throwIfNotOk(res);
+    return res.json();
+  },
+
+  async fetchConversationFiles(convId, isGroup) {
+    const type = isGroup ? 'group' : 'direct';
+    const res = await fetch(`/api/conversations/${convId}/files?type=${type}`, { headers: headers() });
     await throwIfNotOk(res);
     return res.json();
   },

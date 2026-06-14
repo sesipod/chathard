@@ -59,6 +59,8 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		encryptedData []byte
 		encryptedMeta []byte
 		expiresIn     string
+		targetID      string
+		targetType    string
 	)
 
 	if isChunked {
@@ -89,6 +91,8 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		encryptedMetaStr := r.FormValue("encrypted_metadata")
 		encryptedMeta = []byte(encryptedMetaStr)
 		expiresIn = r.FormValue("expires_in")
+		targetID = r.FormValue("target_id")
+		targetType = r.FormValue("target_type")
 
 		fileID = storage.GenerateUUID()
 	} else {
@@ -97,6 +101,8 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 			Ciphertext    []byte `json:"ciphertext"`
 			EncryptedMeta []byte `json:"encrypted_metadata"`
 			ExpiresIn     string `json:"expires_in"`
+			TargetID      string `json:"target_id"`
+			TargetType    string `json:"target_type"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -111,6 +117,8 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		encryptedData = req.Ciphertext
 		encryptedMeta = req.EncryptedMeta
 		expiresIn = req.ExpiresIn
+		targetID = req.TargetID
+		targetType = req.TargetType
 		fileID = storage.GenerateUUID()
 	}
 
@@ -133,7 +141,7 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.queries.InsertFile(fileID, userID, fileID[:2]+"/"+fileID+".enc", encryptedMeta, int64(len(encryptedData)), expiresAt); err != nil {
+	if err := h.queries.InsertFile(fileID, userID, fileID[:2]+"/"+fileID+".enc", encryptedMeta, int64(len(encryptedData)), expiresAt, targetID, targetType); err != nil {
 		h.store.DeleteBlob(fileID)
 		log.Printf("upload: insert file record %s (meta=%d data=%d): %v", fileID, len(encryptedMeta), len(encryptedData), err)
 		http.Error(w, "Failed to create file record", http.StatusInternalServerError)
@@ -145,6 +153,74 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"file_id": fileID,
 		"size":    strconv.FormatInt(int64(len(encryptedData)), 10),
+	})
+}
+
+// GetConversationFiles handles GET /api/conversations/{id}/files?type=direct|group
+func (h *FilesHandler) GetConversationFiles(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(CtxKeyUserID).(string)
+	convID := r.PathValue("id")
+	convType := r.URL.Query().Get("type")
+
+	if convID == "" {
+		http.Error(w, "Missing conversation id", http.StatusBadRequest)
+		return
+	}
+	if convType != "direct" && convType != "group" {
+		http.Error(w, "type must be 'direct' or 'group'", http.StatusBadRequest)
+		return
+	}
+
+	// Auth check: verify the user is a participant
+	if convType == "group" {
+		memberIDs, err := h.queries.GetGroupMemberIDs(convID)
+		if err != nil {
+			http.Error(w, "Group not found", http.StatusNotFound)
+			return
+		}
+		isMember := false
+		for _, mid := range memberIDs {
+			if mid == userID {
+				isMember = true
+				break
+			}
+		}
+		if !isMember {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+	} else {
+		// direct: verify the user has a conversation with the target user
+		convs, err := h.queries.GetConversations(userID)
+		if err != nil {
+			http.Error(w, "Failed to verify conversation", http.StatusInternalServerError)
+			return
+		}
+		isParticipant := false
+		for _, c := range convs {
+			if c.UserID == convID {
+				isParticipant = true
+				break
+			}
+		}
+		if !isParticipant {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+	}
+
+	files, err := h.queries.GetConversationFiles(convID, convType)
+	if err != nil {
+		http.Error(w, "Failed to fetch files", http.StatusInternalServerError)
+		return
+	}
+	if files == nil {
+		files = []db.FileRow{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"files": files,
 	})
 }
 

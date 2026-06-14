@@ -273,11 +273,11 @@
   async function handleAttachFile(e) {
     const conv = $activeConversation;
     const expiresIn = conv?.expires_in && conv.expires_in !== 'Never' ? conv.expires_in : undefined;
+    const convId = conv.user_id || conv.id;
+    const isGroup = conv?.type === 'group';
     try {
-      const result = await api.uploadFile(e.detail, expiresIn);
+      const result = await api.uploadFile(e.detail, expiresIn, convId, isGroup ? 'group' : 'direct');
       if (result && result.file_id) {
-        const conv = $activeConversation;
-        const convId = conv.user_id || conv.id;
         const userId = currentUser?.uuid || sessionStorage.getItem('tailchat-user-id');
         const fileName = e.detail.name || 'file';
         const text = `📎 ${fileName} (${result.file_id})`;

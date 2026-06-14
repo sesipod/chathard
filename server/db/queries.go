@@ -485,17 +485,45 @@ func (q *Queries) GetUserGroupsWithActivity(userID string) ([]GroupWithActivity,
 
 // ─── Files ────────────────────────────────────────────────────────────────────
 
-func (q *Queries) InsertFile(id, uploaderID, encryptedBlobPath string, encryptedMetadata []byte, sizeBytes int64, expiresAt *time.Time) error {
+func (q *Queries) InsertFile(id, uploaderID, encryptedBlobPath string, encryptedMetadata []byte, sizeBytes int64, expiresAt *time.Time, targetID, targetType string) error {
 	var exp *string
 	if expiresAt != nil {
 		s := expiresAt.UTC().Format(time.RFC3339)
 		exp = &s
 	}
 	_, err := q.db.Exec(
-		`INSERT INTO files (id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, uploaderID, encryptedBlobPath, encryptedMetadata, sizeBytes, exp,
+		`INSERT INTO files (id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, expires_at, target_id, target_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, uploaderID, encryptedBlobPath, encryptedMetadata, sizeBytes, exp, nullStr(targetID), nullStr(targetType),
 	)
 	return err
+}
+
+func (q *Queries) GetConversationFiles(targetID, targetType string) ([]FileRow, error) {
+	rows, err := q.db.Query(
+		`SELECT id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, created_at, expires_at FROM files WHERE target_id = ? AND target_type = ? ORDER BY created_at DESC`,
+		targetID, targetType,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []FileRow
+	for rows.Next() {
+		f := &FileRow{}
+		var createdAt string
+		var expiresAt *string
+		if err := rows.Scan(&f.ID, &f.UploaderID, &f.EncryptedBlobPath, &f.EncryptedMetadata, &f.SizeBytes, &createdAt, &expiresAt); err != nil {
+			return nil, err
+		}
+		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if expiresAt != nil {
+			t, _ := time.Parse(time.RFC3339, *expiresAt)
+			f.ExpiresAt = &t
+		}
+		files = append(files, *f)
+	}
+	return files, rows.Err()
 }
 
 func (q *Queries) GetFile(id string) (*FileRow, error) {

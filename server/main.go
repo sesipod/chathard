@@ -211,6 +211,7 @@ func main() {
 	fileHandler := handlers.NewFilesHandler(queries, blobStore, maxUpload)
 	authMux.Handle("/api/files/", fileHandler)
 	authMux.Handle("/files/", fileHandler)
+	authMux.HandleFunc("GET /api/conversations/{id}/files", fileHandler.GetConversationFiles)
 
 	// Groups
 	groupHandler := handlers.NewGroupsHandler(queries)
