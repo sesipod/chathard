@@ -3,7 +3,7 @@
 ## Completed
 
 - [x] Task-001: Create `message_deletions` table + queries (commit: 5ecaab0)
-- [x] Task-002: Add `POST /api/messages/hide` + `POST /api/messages/batch-hide` (commit: 9cb6f00)
+- [x] Task-002: Add `POST /api/messages/hide` + `POST /api/messages/batch-hide` (commit: ee9a52f)
 
 ## Current Iteration
 
