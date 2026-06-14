@@ -326,6 +326,45 @@ func (q *Queries) GetUserGroups(userID string) ([]GroupRow, error) {
 	return groups, rows.Err()
 }
 
+// GroupWithActivity extends GroupRow with the latest message timestamp.
+type GroupWithActivity struct {
+	ID                   string
+	EncryptedName        []byte
+	EncryptedSymmetricKey []byte
+	CreatedAt            string
+	LastActive           string
+}
+
+// GetUserGroupsWithActivity returns groups the user is a member of,
+// including the timestamp of the latest group message (or group creation time).
+func (q *Queries) GetUserGroupsWithActivity(userID string) ([]GroupWithActivity, error) {
+	query := `
+		SELECT g.id, g.encrypted_name, g.encrypted_symmetric_key, g.created_at,
+		       COALESCE(MAX(m.created_at), g.created_at) AS last_active
+		FROM groups g
+		INNER JOIN group_members gm ON gm.group_id = g.id
+		LEFT JOIN messages m ON m.group_id = g.id
+		WHERE gm.user_id = ?
+		GROUP BY g.id
+		ORDER BY last_active DESC
+	`
+	rows, err := q.db.Query(query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groups []GroupWithActivity
+	for rows.Next() {
+		var g GroupWithActivity
+		if err := rows.Scan(&g.ID, &g.EncryptedName, &g.EncryptedSymmetricKey, &g.CreatedAt, &g.LastActive); err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return groups, rows.Err()
+}
+
 // ─── Files ────────────────────────────────────────────────────────────────────
 
 func (q *Queries) InsertFile(id, uploaderID, encryptedBlobPath string, encryptedMetadata []byte, sizeBytes int64, expiresAt *time.Time) error {

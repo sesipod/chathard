@@ -229,14 +229,47 @@ func (h *MessagesHandler) updateRetention(w http.ResponseWriter, r *http.Request
 func (h *MessagesHandler) getConversations(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(CtxKeyUserID).(string)
 
+	// 1:1 conversations
 	convs, err := h.queries.GetConversations(userID)
 	if err != nil {
 		http.Error(w, "Failed to fetch conversations", http.StatusInternalServerError)
 		return
 	}
 
+	// Groups the user is a member of
+	groups, err := h.queries.GetUserGroupsWithActivity(userID)
+	if err != nil {
+		http.Error(w, "Failed to fetch groups", http.StatusInternalServerError)
+		return
+	}
+
+	// Build unified response with type field
+	result := make([]map[string]interface{}, 0, len(convs)+len(groups))
+
+	for _, c := range convs {
+		result = append(result, map[string]interface{}{
+			"user_id":         c.UserID,
+			"handle":          c.Handle,
+			"last_message_at": c.LastMessage,
+			"unread_count":    c.UnreadCount,
+			"last_active":     c.LastActivity,
+			"type":            "direct",
+		})
+	}
+
+	for _, g := range groups {
+		result = append(result, map[string]interface{}{
+			"id":              g.ID,
+			"name":            g.EncryptedName,
+			"last_message_at": g.LastActive,
+			"unread_count":    0,
+			"last_active":     g.LastActive,
+			"type":            "group",
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"conversations": convs,
+		"conversations": result,
 	})
 }
