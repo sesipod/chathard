@@ -139,7 +139,7 @@ const api = {
       }),
     });
     await throwIfNotOk(res);
-    return res.json();
+    // 204 No Content — no JSON body
   },
 
   async updateRetention({ conversationWith, groupId, expiresIn }) {
@@ -153,7 +153,7 @@ const api = {
       }),
     });
     await throwIfNotOk(res);
-    return res.json();
+    // 204 No Content — no JSON body
   },
 
   // ── Conversations ──
