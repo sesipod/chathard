@@ -17,9 +17,9 @@ const CtxKeyUserID CtxKey = "user_id"
 
 // WebSocket message types.
 const (
-	WSTypeNewMessage     = "new_message"
-	WSTypeTyping         = "typing"
-	WSTypeReadReceipt    = "read_receipt"
+	WSTypeNewMessage  = "new_message"
+	WSTypeTyping      = "typing"
+	WSTypeReadReceipt = "read_receipt"
 )
 
 // WSPayload is a generic WebSocket message.
@@ -84,7 +84,7 @@ func (h *Hub) RemoveConnection(userID string, conn *websocket.Conn) {
 }
 
 // NotifyNewMessage sends a new_message notification to relevant users.
-func (h *Hub) NotifyNewMessage(msgID, senderID, recipientID, groupID string) {
+func (h *Hub) NotifyNewMessage(msgID, senderID, recipientID, groupID string, groupMemberIDs []string) {
 	payload := WSPayload{
 		Type:     WSTypeNewMessage,
 		MsgID:    msgID,
@@ -96,7 +96,12 @@ func (h *Hub) NotifyNewMessage(msgID, senderID, recipientID, groupID string) {
 	if recipientID != "" {
 		h.sendToUser(recipientID, payload)
 	}
-	// For group messages, the group handler would notify all members
+	// Notify all group members (except sender)
+	for _, memberID := range groupMemberIDs {
+		if memberID != senderID {
+			h.sendToUser(memberID, payload)
+		}
+	}
 }
 
 // NotifyTyping sends a typing indicator.
@@ -209,5 +214,3 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("ws: user %s disconnected", userID)
 }
-
-

@@ -375,6 +375,23 @@ func (q *Queries) RemoveMember(groupID, userID string) error {
 	return err
 }
 
+func (q *Queries) GetGroupMemberIDs(groupID string) ([]string, error) {
+	rows, err := q.db.Query(`SELECT user_id FROM group_members WHERE group_id = ?`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (q *Queries) GetGroupMessages(groupID string, after, before *time.Time, limit int) ([]MessageRow, error) {
 	return q.GetMessages("", groupID, after, before, limit)
 }

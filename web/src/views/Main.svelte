@@ -107,7 +107,8 @@
       switch (data.type) {
         case 'new_message': {
           // Reload conversations and messages to get full encrypted content
-          const convId = data.sender_id; // the other user's ID
+          // For 1:1, convId is the sender's ID. For groups, it's the group_id.
+          const convId = data.group_id || data.sender_id;
           if (convId) {
             chatStore.loadConversations();
             chatStore.loadMessages(convId);

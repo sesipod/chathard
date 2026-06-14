@@ -138,7 +138,11 @@ func (h *MessagesHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 	// Notify via WebSocket
 	hub := GetHub()
 	if hub != nil {
-		hub.NotifyNewMessage(id, userID, req.RecipientID, req.GroupID)
+		var groupMemberIDs []string
+		if req.GroupID != "" {
+			groupMemberIDs, _ = h.queries.GetGroupMemberIDs(req.GroupID)
+		}
+		hub.NotifyNewMessage(id, userID, req.RecipientID, req.GroupID, groupMemberIDs)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
