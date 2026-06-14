@@ -18,6 +18,7 @@
    *   on:leaveGroup   — fired from Conversation
    *   on:openFiles    — fired from Conversation 3-dot menu
    *   on:delete       — fired from Conversation with { messageId } when a message is hidden
+   *   on:batchDelete  — fired from Conversation with { messageIds } for batch hide
    */
   import EmptyState from './EmptyState.svelte';
   import Conversation from './Conversation.svelte';
@@ -65,6 +66,10 @@
   function handleDelete(e) {
     dispatch('delete', e.detail);
   }
+
+  function handleBatchDelete(e) {
+    dispatch('batchDelete', e.detail);
+  }
 </script>
 
 <div class="right-panel">
@@ -81,6 +86,7 @@
       on:leaveGroup={handleLeaveGroup}
       on:openFiles={handleOpenFiles}
       on:delete={handleDelete}
+      on:batchDelete={handleBatchDelete}
     />
   {:else}
     <EmptyState on:newChat={handleNewChat} />

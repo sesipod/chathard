@@ -259,6 +259,15 @@ const api = {
     await throwIfNotOk(res);
   },
 
+  async batchHideMessages(messageIds) {
+    const res = await fetch('/api/messages/batch-hide', {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ message_ids: messageIds }),
+    });
+    await throwIfNotOk(res);
+  },
+
   // ── Files ──
   async uploadFile(file, expiresIn) {
     const form = new FormData();

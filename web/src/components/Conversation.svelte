@@ -35,6 +35,11 @@
   let showRetentionConfirm = false;
   let pendingRetentionValue = '';
 
+  // ── Multi-select mode ──
+  let selectMode = false;
+  let selectedMessages = new Set();
+  let showBatchConfirm = false;
+
   const retentionOptions = ['Never', '1h', '24h', '7d', '30d', '90d'];
 
   $: displayName = conversation.handle || conversation.name || 'Unknown';
@@ -176,6 +181,60 @@
     dispatch('delete', e.detail);
   }
 
+  // ── Multi-select mode ──
+  function toggleSelectMode() {
+    selectMode = !selectMode;
+    if (!selectMode) {
+      selectedMessages = new Set();
+      showBatchConfirm = false;
+    }
+  }
+
+  function exitSelectMode() {
+    selectMode = false;
+    selectedMessages = new Set();
+    showBatchConfirm = false;
+  }
+
+  function handleSelect(e) {
+    const { messageId } = e.detail;
+    const next = new Set(selectedMessages);
+    if (next.has(messageId)) {
+      next.delete(messageId);
+    } else {
+      next.add(messageId);
+    }
+    selectedMessages = next;
+  }
+
+  function handleBatchDeleteClick() {
+    showBatchConfirm = true;
+  }
+
+  function cancelBatchDelete() {
+    showBatchConfirm = false;
+  }
+
+  async function confirmBatchDelete() {
+    const ids = Array.from(selectedMessages);
+    if (ids.length === 0) return;
+    showBatchConfirm = false;
+    try {
+      const { default: api } = await import('../lib/api.js');
+      await api.batchHideMessages(ids);
+      dispatch('batchDelete', { messageIds: ids });
+      exitSelectMode();
+    } catch (e) {
+      console.error('Failed to batch hide messages:', e);
+    }
+  }
+
+  function handleKeydown(e) {
+    if (e.key === 'Escape' && selectMode) {
+      exitSelectMode();
+    }
+  }
+
   function handleRetentionChange(e) {
     const value = e.target.value;
     if (value && value !== currentRetention) {
@@ -191,7 +250,7 @@
 
 </script>
 
-<div class="conversation">
+<div class="conversation" on:keydown={handleKeydown}>
   <!-- Header -->
   <header class="conv-header">
     <div class="header-left">
@@ -218,6 +277,26 @@
     </div>
 
     <div class="header-right">
+      <!-- Select mode toggle -->
+      <button
+        class="select-mode-btn"
+        on:click={toggleSelectMode}
+        title={selectMode ? 'Cancel selection' : 'Select messages'}
+        aria-label={selectMode ? 'Cancel selection' : 'Select messages'}
+      >
+        {#if selectMode}
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="4" y1="4" x2="14" y2="14"/>
+            <line x1="14" y1="4" x2="4" y2="14"/>
+          </svg>
+        {:else}
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="2" width="14" height="14" rx="3" ry="3" stroke-width="1.5"/>
+            <line x1="6" y1="9" x2="12" y2="9" stroke-width="2"/>
+          </svg>
+        {/if}
+      </button>
+
       <!-- 3-dot menu -->
       <div class="menu-wrapper">
         <button
@@ -329,7 +408,10 @@
           convId={conversation.user_id || conversation.id || ''}
           showDateSeparator={row.showDateSeparator}
           dateText={row.dateText}
+          selectMode={selectMode}
+          selected={selectedMessages.has(row.message.id)}
           on:delete={handleDelete}
+          on:select={handleSelect}
         />
       {/each}
     {/if}
@@ -349,6 +431,21 @@
     </button>
   {/if}
 
+  <!-- Floating action bar (multi-select mode) -->
+  {#if selectMode}
+    <div class="select-action-bar">
+      <span class="select-count">{selectedMessages.size} selected</span>
+      <div class="select-actions">
+        <button class="select-cancel-btn" on:click={exitSelectMode}>Cancel</button>
+        <button
+          class="select-delete-btn"
+          disabled={selectedMessages.size === 0}
+          on:click={handleBatchDeleteClick}
+        >Delete Selected ({selectedMessages.size})</button>
+      </div>
+    </div>
+  {/if}
+
   <!-- Message input -->
   <MessageInput
     typingUser={typingUser}
@@ -356,6 +453,22 @@
     on:attach={handleAttach}
     on:typing={handleTyping}
   />
+
+  <!-- Batch delete confirmation dialog -->
+  {#if showBatchConfirm}
+    <div class="batch-confirm-overlay" on:click={cancelBatchDelete}>
+      <div class="batch-confirm-dialog" on:click|stopPropagation>
+        <h3 class="confirm-title">Delete {selectedMessages.size} messages?</h3>
+        <p class="confirm-body">
+          Delete {selectedMessages.size} messages from your feed? Other people will not be affected.
+        </p>
+        <div class="confirm-actions">
+          <button class="confirm-btn cancel" on:click={cancelBatchDelete}>Cancel</button>
+          <button class="confirm-btn confirm" on:click={confirmBatchDelete}>Delete</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -396,5 +509,17 @@
   .confirm-btn:hover { opacity:.85; }
   .confirm-btn.cancel { background:var(--color-bg-tertiary); color:var(--color-text); }
   .confirm-btn.confirm { background:var(--color-danger,#e74c3c); color:#fff; }
+  .select-mode-btn { display:flex; align-items:center; justify-content:center; width:36px; height:36px; border:none; border-radius:50%; background:transparent; color:var(--color-text-muted); cursor:pointer; transition:background .15s,color .15s; flex-shrink:0; }
+  .select-mode-btn:hover { background:var(--color-bg-tertiary); color:var(--color-text); }
+  .select-action-bar { display:flex; align-items:center; justify-content:space-between; padding:.5rem .75rem; border-top:1px solid var(--color-border); background:var(--color-bg-secondary); flex-shrink:0; gap:.5rem; }
+  .select-count { font-size:.8125rem; font-weight:600; color:var(--color-text); white-space:nowrap; }
+  .select-actions { display:flex; align-items:center; gap:.5rem; }
+  .select-cancel-btn { padding:.375rem .75rem; border:1px solid var(--color-border); border-radius:6px; background:transparent; color:var(--color-text); font-size:.75rem; font-weight:600; font-family:inherit; cursor:pointer; transition:background .12s; }
+  .select-cancel-btn:hover { background:var(--color-bg-tertiary); }
+  .select-delete-btn { padding:.375rem .75rem; border:none; border-radius:6px; background:var(--color-danger,#e74c3c); color:#fff; font-size:.75rem; font-weight:600; font-family:inherit; cursor:pointer; transition:opacity .12s; white-space:nowrap; }
+  .select-delete-btn:hover { opacity:.85; }
+  .select-delete-btn:disabled { opacity:.4; cursor:not-allowed; }
+  .batch-confirm-overlay { position:absolute; inset:0; z-index:30; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.5); padding:1rem; }
+  .batch-confirm-dialog { max-width:360px; width:100%; padding:1.25rem; border-radius:12px; background:var(--color-bg-secondary); border:1px solid var(--color-border); box-shadow:0 8px 32px rgba(0,0,0,.4); }
   @media (max-width:767px) { .back-btn { display:flex; } .scroll-fab { bottom:72px; } }
 </style>

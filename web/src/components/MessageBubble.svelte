@@ -9,9 +9,12 @@
    *   senderHandle     {string}  Sender's handle (shown in groups for received msgs)
    *   showDateSeparator {boolean} Whether to render a date header before this bubble
    *   dateText          {string}  Text for the date header ("Today", "Yesterday", "Jun 9")
+   *   selectMode       {boolean} Whether multi-select mode is active
+   *   selected         {boolean} Whether this message is currently selected
    *
    * Events:
    *   on:delete  — fired with { messageId } when the user confirms deletion
+   *   on:select  — fired with { messageId } when checkbox is toggled in selectMode
    */
   export let message = {};
   export let isOwn = false;
@@ -19,6 +22,8 @@
   export let showDateSeparator = false;
   export let dateText = '';
   export let convId = '';
+  export let selectMode = false;
+  export let selected = false;
 
   import { createEventDispatcher } from 'svelte';
   import { getAutoShowImages, imageSettingsVersion } from '../lib/stores/settings.js';
@@ -132,7 +137,7 @@
   $: statusLabel = status === 'sent' ? 'Sent' : status === 'delivered' ? 'Delivered' : 'Read';
 </script>
 
-<div class="message-wrapper" class:own={isOwn} class:system={isSystem}>
+<div class="message-wrapper" class:own={isOwn} class:system={isSystem} class:select-mode={selectMode}>
   {#if showDateSeparator}
     <div class="date-separator">
       <span class="date-label">{dateText}</span>
@@ -143,8 +148,27 @@
     <!-- System messages: centered, muted -->
     <div class="system-message">{content}</div>
   {:else}
-    <div class="bubble-row">
-      <div class="bubble" class:sent={isOwn} class:received={!isOwn}>
+    <div class="bubble-row" class:selected>
+      {#if selectMode}
+        <button
+          class="select-checkbox"
+          class:checked={selected}
+          on:click|stopPropagation={() => dispatch('select', { messageId: message.id })}
+          aria-label={selected ? 'Deselect message' : 'Select message'}
+        >
+          {#if selected}
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
+              <rect x="1" y="1" width="16" height="16" rx="4" ry="4" fill="var(--color-accent)" stroke="var(--color-accent)" stroke-width="2"/>
+              <polyline points="5,9 8,12 13,6" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          {:else}
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5">
+              <rect x="1.5" y="1.5" width="15" height="15" rx="3" ry="3"/>
+            </svg>
+          {/if}
+        </button>
+      {/if}
+      <div class="bubble" class:sent={isOwn} class:received={!isOwn} class:select-mode-active={selectMode}>
         {#if !isOwn && senderHandle}
           <div class="sender-handle">{senderHandle}</div>
         {/if}
@@ -194,21 +218,23 @@
               {/if}
             </span>
           {/if}
-          <button
-            class="delete-btn"
-            on:click={handleDeleteClick}
-            title="Delete this message from your feed"
-            aria-label="Delete message"
-          >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="2,4 12,4" />
-              <path d="M4,4 V3a1,1 0 0,1 1-1 h4a1,1 0 0,1 1,1 v1" />
-              <path d="M5,4 v6" />
-              <path d="M7,4 v6" />
-              <path d="M9,4 v6" />
-              <path d="M3,4 h8 l-.5,7a1,1 0 0,1-1,1 h-5a1,1 0 0,1-1-1 L3,4" />
-            </svg>
-          </button>
+          {#if !selectMode}
+            <button
+              class="delete-btn"
+              on:click={handleDeleteClick}
+              title="Delete this message from your feed"
+              aria-label="Delete message"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="2,4 12,4" />
+                <path d="M4,4 V3a1,1 0 0,1 1-1 h4a1,1 0 0,1 1,1 v1" />
+                <path d="M5,4 v6" />
+                <path d="M7,4 v6" />
+                <path d="M9,4 v6" />
+                <path d="M3,4 h8 l-.5,7a1,1 0 0,1-1,1 h-5a1,1 0 0,1-1-1 L3,4" />
+              </svg>
+            </button>
+          {/if}
         </div>
 
         {#if showConfirm}
@@ -234,10 +260,16 @@
   .date-separator { display:flex; align-items:center; justify-content:center; margin:1rem 0 .5rem; width:100%; }
   .date-label { padding:.25rem .75rem; border-radius:4px; background:var(--color-bg-tertiary); color:var(--color-text-muted); font-size:.75rem; font-weight:600; text-transform:uppercase; letter-spacing:.025em; }
   .system-message { font-size:.75rem; color:var(--color-text-muted); text-align:center; padding:.5rem 0; opacity:.75; max-width:80%; }
-  .bubble-row { max-width:75%; min-width:80px; width:fit-content; }
+  .bubble-row { max-width:75%; min-width:80px; width:fit-content; display:flex; align-items:flex-start; gap:.375rem; }
+  .bubble-row.selected { max-width:calc(75% + 26px); }
+  .select-checkbox { flex-shrink:0; display:flex; align-items:center; justify-content:center; width:24px; height:24px; margin-top:.45rem; padding:0; border:none; background:none; cursor:pointer; border-radius:4px; transition:background .12s; }
+  .select-checkbox:hover { background:var(--color-bg-tertiary); }
   .bubble { padding:.5rem .75rem; border-radius:12px; position:relative; word-wrap:break-word; overflow-wrap:break-word; }
   .bubble.sent { background:var(--color-sent); color:#fff; border-bottom-right-radius:4px; }
   .bubble.received { background:var(--color-received); color:var(--color-text); border-bottom-left-radius:4px; }
+  .bubble.select-mode-active { border-left:3px solid var(--color-accent); }
+  .bubble-row.selected .bubble.received { border-left:3px solid var(--color-accent); }
+  .bubble-row.selected .bubble.sent { border-left:3px solid var(--color-accent); }
   .sender-handle { font-size:.75rem; font-weight:600; color:var(--color-accent); margin-bottom:.125rem; }
   .bubble-content { display:flex; flex-direction:column; }
   .bubble-text { font-size:.875rem; line-height:1.4; white-space:pre-wrap; }
@@ -254,6 +286,8 @@
   .bubble.sent .bubble-time { color:rgba(255,255,255,.75); }
   .delete-btn { display:none; align-items:center; justify-content:center; width:20px; height:20px; border:none; border-radius:4px; background:transparent; color:inherit; opacity:.5; cursor:pointer; padding:0; transition:opacity .12s,background .12s; flex-shrink:0; }
   .message-wrapper:hover .delete-btn { display:flex; }
+  .message-wrapper:not(.select-mode) .delete-btn { display:none; }
+  .message-wrapper:not(.select-mode):hover .delete-btn { display:flex; }
   .delete-btn:hover { opacity:1; background:rgba(0,0,0,.1); }
   .bubble.sent .delete-btn:hover { background:rgba(255,255,255,.15); }
   .delete-confirm-overlay { position:absolute; inset:0; z-index:30; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.4); border-radius:12px; }

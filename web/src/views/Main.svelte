@@ -421,6 +421,17 @@
     });
   }
 
+  function handleBatchDelete(e) {
+    const { messageIds } = e.detail;
+    const convId = $activeConversationId;
+    if (!convId || !messageIds || messageIds.length === 0) return;
+    const idSet = new Set(messageIds);
+    chatStore.messages.update((m) => {
+      const msgs = (m[convId] || []).filter((msg) => !idSet.has(msg.id));
+      return { ...m, [convId]: msgs };
+    });
+  }
+
   // ── Toast helper ──
   function showToast(message) {
     const id = ++toastCounter;
@@ -466,6 +477,7 @@
         on:leaveGroup={handleLeaveGroup}
         on:openFiles={handleOpenFiles}
         on:delete={handleDeleteMessage}
+        on:batchDelete={handleBatchDelete}
         on:newChat={() => (showNewChat = true)}
       />
     </div>
