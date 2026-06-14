@@ -15,7 +15,6 @@ import { writable } from 'svelte/store';
 const STORAGE_PREFIX = 'tailchat-';
 const THEME_KEY = `${STORAGE_PREFIX}theme`;
 const RETENTION_KEY = `${STORAGE_PREFIX}retention`;
-const IMAGE_KEY = `${STORAGE_PREFIX}autoShowImages`;
 
 // ── Helpers ──
 
@@ -89,20 +88,24 @@ function setDefaultRetention(value) {
   }
 }
 
-// ── Auto-show images ──
+// ── Per-conversation auto-show images ──
 
-const initialAutoImages = readFromStorage(IMAGE_KEY, 'true') === 'true';
-export const autoShowImages = writable(initialAutoImages);
+const IMAGE_PREFIX = `${STORAGE_PREFIX}showImages-`;
 
-autoShowImages.subscribe((value) => {
-  writeToStorage(IMAGE_KEY, String(value));
-});
+export function getAutoShowImages(convId) {
+  try { return localStorage.getItem(IMAGE_PREFIX + convId) !== 'false'; } catch { return true; }
+}
+
+export function setAutoShowImages(convId, value) {
+  try { localStorage.setItem(IMAGE_PREFIX + convId, String(value)); } catch {}
+}
 
 export const settings = {
   theme,
   defaultRetention,
-  autoShowImages,
   toggleTheme,
   setTheme,
   setDefaultRetention,
+  getAutoShowImages,
+  setAutoShowImages,
 };

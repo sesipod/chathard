@@ -2,7 +2,7 @@
   import { createEventDispatcher, onMount } from 'svelte';
   import Avatar from './common/Avatar.svelte';
   import { auth } from '../lib/stores/auth.js';
-  import { settings, theme, defaultRetention, autoShowImages } from '../lib/stores/settings.js';
+  import { settings, theme, defaultRetention } from '../lib/stores/settings.js';
   import api from '../lib/api.js';
 
   export let show = false;
@@ -45,6 +45,9 @@
   function doExport() { confirmExportKey = false; }
   function convName(c) { return c.handle || c.name || 'Unknown'; }
   function isEditing(c) { const id = editingRetentionConv?.user_id || editingRetentionConv?.id; return id === (c.user_id || c.id); }
+  function convKey(c) { return c.user_id || c.id; }
+  function getShowImages(c) { return settings.getAutoShowImages(convKey(c)); }
+  function toggleImages(c) { settings.setAutoShowImages(convKey(c), !getShowImages(c)); }
 </script>
 
 {#if show}
@@ -83,13 +86,6 @@
     <span>Default auto-delete</span>
     <select class="sel" value={$defaultRetention} on:change={setDefRet}>{#each retentionOptions as opt}<option value={opt}>{opt}</option>{/each}</select>
   </div>
-  <div class="row">
-    <span>Auto-show images in chat</span>
-    <label class="toggle">
-      <input type="checkbox" checked={$autoShowImages} on:change={(e) => autoShowImages.set(e.target.checked)} />
-      <span class="toggle-slider"></span>
-    </label>
-  </div>
 </div></section>
 
 <section class="sec"><h3 class="st">Per-Conversation Settings</h3><div class="card">
@@ -98,6 +94,10 @@
 <div class="ret-row" class:editing={isEditing(conv)}>
   <Avatar name={convName(conv)} size={28} />
   <span class="ret-name">{convName(conv)}</span>
+  <label class="toggle" title="Auto-show images">
+    <input type="checkbox" checked={getShowImages(conv)} on:change={() => toggleImages(conv)} />
+    <span class="toggle-slider"></span>
+  </label>
   {#if isEditing(conv)}
   <select class="sel ret-sel" bind:value={editingRetentionValue}>{#each retentionOptions as opt}<option value={opt}>{opt}</option>{/each}</select>
   <button class="btn btn-xs btn-primary" on:click={saveRet}>Save</button>

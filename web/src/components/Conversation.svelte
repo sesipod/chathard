@@ -248,6 +248,7 @@
           message={row.message}
           isOwn={row.message.is_own ?? (row.message.sender_id === currentUserId)}
           senderHandle={row.message.is_own ? '' : (conversation.handle || '')}
+          convId={conversation.user_id || conversation.id || ''}
           showDateSeparator={row.showDateSeparator}
           dateText={row.dateText}
         />

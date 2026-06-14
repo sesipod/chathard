@@ -15,8 +15,9 @@
   export let senderHandle = '';
   export let showDateSeparator = false;
   export let dateText = '';
+  export let convId = '';
 
-  import { autoShowImages } from '../lib/stores/settings.js';
+  import { getAutoShowImages } from '../lib/stores/settings.js';
 
   /** Format a timestamp into a short time string like "10:42 AM". */
   function formatTime(iso) {
@@ -46,10 +47,11 @@
   $: fileId = fileMatch ? fileMatch[2] : '';
   $: displayContent = isFile ? `📎 ${fileName}` : content;
   $: isImage = fileMatch && /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(fileName);
-  $: shouldAutoLoad = isImage && $autoShowImages;
+  $: shouldAutoLoad = isImage && getAutoShowImages(convId || 'default');
   let imageUrl = '';
   let imageLoaded = false;
   let imageError = false;
+  let lightbox = false;
 
   // Load image blob when auto-show is enabled
   $: if (shouldAutoLoad && fileId && !imageLoaded && !imageError) {
@@ -111,8 +113,13 @@
         <div class="bubble-content">
           {#if isFile}
             {#if imageUrl}
-              <img class="inline-image" src={imageUrl} alt={fileName} on:error={() => { imageError = true; imageUrl = ''; }} />
+              <img class="inline-image" src={imageUrl} alt={fileName} on:click={() => { lightbox = true; }} on:error={() => { imageError = true; imageUrl = ''; }} />
               <span class="file-caption">{fileName}</span>
+              {#if lightbox}
+                <div class="lightbox-bg" on:click={() => { lightbox = false; }} role="dialog">
+                  <img class="lightbox-img" src={imageUrl} alt={fileName} on:click|stopPropagation />
+                </div>
+              {/if}
             {:else if imageError}
               <button class="file-download" on:click={downloadFile}>
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v2a2 2 0 002 2h6a2 2 0 002-2v-2M9 3v9M6 9l3 3 3-3"/></svg>
@@ -174,6 +181,8 @@
   .inline-image { max-width:280px; max-height:320px; border-radius:8px; cursor:pointer; object-fit:cover; }
   .inline-image:hover { opacity:.9; }
   .file-caption { font-size:.6875rem; color:inherit; opacity:.6; margin-top:2px; }
+  .lightbox-bg { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.85); cursor:pointer; padding:1rem; }
+  .lightbox-img { max-width:90vw; max-height:90vh; object-fit:contain; border-radius:8px; cursor:default; }
   .bubble-meta { display:flex; align-items:center; justify-content:flex-end; gap:.25rem; margin-top:.125rem; }
   .bubble.sent .bubble-meta { justify-content:flex-end; }
   .bubble-time { font-size:.6875rem; opacity:.7; line-height:1; }
