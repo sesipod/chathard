@@ -266,8 +266,25 @@
 
   async function handleAttachFile(e) {
     try {
-      await api.uploadFile(e.detail);
-      showToast('File uploaded');
+      const result = await api.uploadFile(e.detail);
+      // Send a file-reference message after successful upload
+      if (result && result.file_id) {
+        const conv = $activeConversation;
+        const convId = conv.user_id || conv.id;
+        const userId = currentUser?.uuid || sessionStorage.getItem('tailchat-user-id');
+        const fileName = e.detail.name || 'file';
+        const text = `📎 ${fileName} (${result.file_id})`;
+        await api.sendMessage({
+          recipientId: conv.type === 'group' ? null : convId,
+          groupId: conv.type === 'group' ? convId : null,
+          ciphertext: new TextEncoder().encode(text),
+          ephemeralPub: new Uint8Array(32),
+          nonce: new Uint8Array(12),
+        });
+        showToast('File sent');
+      } else {
+        showToast('File uploaded');
+      }
     } catch {
       showToast('File upload failed');
     }
