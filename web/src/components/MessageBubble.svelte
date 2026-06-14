@@ -52,6 +52,7 @@
   $: shouldAutoLoad = isImage && showImages;
   let imageLoaded = false;
   let imageError = false;
+  let imageUrl = '';
   let lightbox = false;
 
   // Load image blob when auto-show is enabled
