@@ -33,6 +33,7 @@
 
   $: displayName = conversation.handle || conversation.name || 'Unknown';
   $: isGroup = conversation.type === 'group';
+  $: currentUserId = sessionStorage.getItem('tailchat-user-id') || '';
   $: retentionLabel = conversation.retention && conversation.retention !== 'Never'
     ? `Auto-delete: ${conversation.retention}`
     : '';
@@ -245,8 +246,8 @@
       {#each messageRows as row, i (row.message.id || i)}
         <MessageBubble
           message={row.message}
-          isOwn={row.message.is_own ?? false}
-          senderHandle={row.message.sender_handle || ''}
+          isOwn={row.message.is_own ?? (row.message.sender_id === currentUserId)}
+          senderHandle={row.message.sender_handle || (isGroup ? row.message.sender_handle : '')}
           showDateSeparator={row.showDateSeparator}
           dateText={row.dateText}
         />
