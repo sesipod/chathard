@@ -85,9 +85,7 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		}
 
 		encryptedMetaStr := r.FormValue("encrypted_metadata")
-		if encryptedMetaStr != "" {
-			encryptedMeta = []byte(encryptedMetaStr)
-		}
+		encryptedMeta = []byte(encryptedMetaStr)
 
 		fileID = storage.GenerateUUID()
 	} else {

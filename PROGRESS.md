@@ -14,17 +14,17 @@
 
 ## Current Iteration
 
-- Iteration: 12
-- Working on: Phase 4 — Security hardening
-- Started: 2026-06-11
+- Iteration: 13
+- Working on: Task-001/002: Fix file upload 500 error
+- Started: 2026-06-13
 
 ## Last Completed
 
-- **Phase 4: Security hardening** (3 files modified)
-  - `server/handlers/auth.go` — Fixed session token expiry from 24h to 7 days, added periodic expired challenge cleanup goroutine (every 5 min)
-  - `server/middleware/ratelimit.go` — Added periodic stale entry cleanup goroutine to prevent memory leak (every 5 min, removes entries past max window unless still locked)
-  - `server/main.go` — Added periodic expired session cleanup goroutine (every 1 hour, deletes sessions where `expires_at < datetime('now')`)
-  - Verification: SHA-256 session hashing ✅, challenge 5-min expiry ✅, constant-time recovery comparison ✅, HKDF key blinding ✅, unique AES-GCM per file ✅, no hardcoded secrets ✅
+- **Task-001/002: Fix file upload 500 error**
+  - `server/handlers/files.go` — Removed `if encryptedMetaStr != ""` guard that caused `encryptedMeta` to stay `nil` when the client sends an empty-string `encrypted_metadata` form field
+  - Root cause: `nil` `[]byte` → SQL `NULL` → violated `encrypted_metadata BLOB NOT NULL` constraint
+  - Fix: Always set `encryptedMeta = []byte(encryptedMetaStr)`, producing a valid zero-length blob `X''` for empty strings
+  - Build: ✅ Compiles cleanly
 
 ## Blockers
 
@@ -32,4 +32,5 @@
 
 ## Notes for Next Iteration
 
-- All phases complete. TailChat is fully built.
+- Task-003/004: Fix group creation + display in sidebar
+- File upload should now return 201; verify with curl test per PRD
