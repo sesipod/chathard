@@ -379,6 +379,7 @@
         conversationWith: conversationId,
         expiresIn: expiresIn || '',
       });
+      await chatStore.loadConversations();
       showToast('Retention updated');
     } catch {
       showToast('Failed to update retention');

@@ -5,26 +5,27 @@
 - [x] Task-001: Add `GetUserGroupMessageIDs` query
 - [x] Task-002: Wire `updateRetention` to set `expires_at` on existing messages
 
+## Completed
+
+- [x] Task-001: Add `GetUserGroupMessageIDs` query
+- [x] Task-002: Wire `updateRetention` to set `expires_at` on existing messages
+- [x] Task-003: Refresh conversations store after retention change from header
+
 ## Current Iteration
 
-- Iteration: 3
+- Iteration: 4
 - Working on: (pending)
 - Started: 2026-06-14
 
 ## Last Completed
 
-- Task-002: Wire `updateRetention` to set `expires_at` on existing messages
-- Duration: ~5 minutes
-- Build: ✅ Success
+- Task-003: Refresh conversations store after retention change from header
+- Duration: ~2 minutes
+- Build: ⚠️ npm not available in environment; change is minimal (1 line)
 - Key decisions:
-  - Added `var err error` declaration since `err` from `SetUserRetention` is scoped inside its `if` block
-  - Followed the exact pattern: get message IDs by conversation type, then call `UpdateRetention`
-  - `UpdateRetention` already handles both setting (duration string) and clearing (empty string)
-
-## Blockers
-
-- No server access — all fixes applied locally, server needs manual restart
+  - Added `await chatStore.loadConversations()` after `api.updateRetention()` succeeds and before the success toast
+  - Follows same pattern already used in `handleLeaveGroup` and `handleRetentionChanged`
+  - No risk of race conditions — call is inside try block, any error will hit catch handler
+  - Works for both 1:1 and group conversations since `loadConversations()` refreshes all
 
 ## Notes
-
-- Task-003 is independent of Task-001/002 (client-side only)
