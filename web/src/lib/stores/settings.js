@@ -92,12 +92,18 @@ function setDefaultRetention(value) {
 
 const IMAGE_PREFIX = `${STORAGE_PREFIX}showImages-`;
 
+/** Reactive counter — increments whenever any per-conversation setting changes */
+export const imageSettingsVersion = writable(0);
+
 export function getAutoShowImages(convId) {
   try { return localStorage.getItem(IMAGE_PREFIX + convId) !== 'false'; } catch { return true; }
 }
 
 export function setAutoShowImages(convId, value) {
-  try { localStorage.setItem(IMAGE_PREFIX + convId, String(value)); } catch {}
+  try {
+    localStorage.setItem(IMAGE_PREFIX + convId, String(value));
+    imageSettingsVersion.update(v => v + 1); // notify subscribers
+  } catch {}
 }
 
 export const settings = {
