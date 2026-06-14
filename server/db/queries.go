@@ -250,26 +250,58 @@ func (q *Queries) GetGroupMessageIDs(groupID string) ([]string, error) {
 	return ids, rows.Err()
 }
 
-func (q *Queries) UpdateRetention(msgIDs []string, expiresAt *time.Time) error {
+// expiresInToSQL converts a shorthand duration to a SQLite datetime modifier.
+// "1h" → "+1 hours", "24h" → "+24 hours", "7d" → "+7 days", etc.
+func expiresInToSQL(s string) string {
+	if len(s) < 2 {
+		return "+" + s
+	}
+	num := s[:len(s)-1]
+	switch s[len(s)-1:] {
+	case "h":
+		return "+" + num + " hours"
+	case "d":
+		return "+" + num + " days"
+	default:
+		return "+" + s
+	}
+}
+
+func (q *Queries) UpdateRetention(msgIDs []string, expiresIn string) error {
+	if len(msgIDs) == 0 {
+		return nil
+	}
 	tx, err := q.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`UPDATE messages SET expires_at = ? WHERE id = ?`)
+	// Clear retention
+	if expiresIn == "" {
+		stmt, err := tx.Prepare(`UPDATE messages SET expires_at = NULL WHERE id = ?`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, id := range msgIDs {
+			if _, err := stmt.Exec(id); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	}
+
+	// Set retention relative to each message's created_at so old messages
+	// are deleted retroactively (not just now + duration).
+	mod := expiresInToSQL(expiresIn)
+	stmt, err := tx.Prepare(`UPDATE messages SET expires_at = datetime(created_at, ?) WHERE id = ?`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
-
 	for _, id := range msgIDs {
-		var exp *string
-		if expiresAt != nil {
-			s := expiresAt.UTC().Format(time.RFC3339)
-			exp = &s
-		}
-		if _, err := stmt.Exec(exp, id); err != nil {
+		if _, err := stmt.Exec(mod, id); err != nil {
 			return err
 		}
 	}

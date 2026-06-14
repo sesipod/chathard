@@ -259,18 +259,17 @@ func (h *MessagesHandler) updateRetention(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var expiresAt *time.Time
+	var expiresIn string
 	if req.ExpiresIn != "" {
-		d, err := parseDuration(req.ExpiresIn)
-		if err != nil {
+		// Validate the duration format
+		if _, err := parseDuration(req.ExpiresIn); err != nil {
 			http.Error(w, "Invalid expires_in", http.StatusBadRequest)
 			return
 		}
-		t := time.Now().Add(d)
-		expiresAt = &t
+		expiresIn = req.ExpiresIn
 	}
 
-	if err := h.queries.UpdateRetention(msgIDs, expiresAt); err != nil {
+	if err := h.queries.UpdateRetention(msgIDs, expiresIn); err != nil {
 		http.Error(w, "Failed to update retention", http.StatusInternalServerError)
 		return
 	}
