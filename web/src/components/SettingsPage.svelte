@@ -100,28 +100,27 @@
   </div>
 </div></section>
 
-<section class="sec"><h3 class="st">Per-Conversation Settings</h3><div class="card">
-{#if conversations.length === 0}<p class="muted">No conversations yet.</p>
+<section class="sec"><h3 class="st">Per-Conversation Settings</h3>
+{#if conversations.length === 0}<div class="card"><p class="muted">No conversations yet.</p></div>
 {:else}{#each conversations as conv (conv.user_id || conv.id)}
-<div class="ret-row" class:editing={isEditing(conv)}>
-  <Avatar name={convName(conv)} size={28} />
-  <span class="ret-name">{convName(conv)}</span>
-  <div class="ret-controls">
-    {#if isEditing(conv)}
-    <select class="sel ret-sel" bind:value={editingRetentionValue}>{#each retentionOptions as opt}<option value={opt}>{opt}</option>{/each}</select>
-    <button class="btn btn-xs btn-primary" on:click={saveRet}>Save</button>
-    <button class="btn btn-xs" on:click={cancelRet}>Cancel</button>
-    {:else}
-    <span class="badge ret-badge">{conv.expires_in || 'Never'}</span>
-    <button class="btn btn-xs" on:click={() => editRet(conv)}>Change</button>
-    {/if}
-    <label class="toggle" title="Auto-show images">
+<div class="card conv-card">
+  <div class="conv-head">
+    <Avatar name={convName(conv)} size={28} />
+    <span class="conv-name">{convName(conv)}</span>
+  </div>
+  <div class="row">
+    <span>Default auto-delete</span>
+    <span>{#if isEditing(conv)}<select class="sel ret-sel" bind:value={editingRetentionValue}>{#each retentionOptions as opt}<option value={opt}>{opt}</option>{/each}</select><button class="btn btn-xs btn-primary" on:click={saveRet}>Save</button><button class="btn btn-xs" on:click={cancelRet}>Cancel</button>{:else}<span class="badge ret-badge">{conv.expires_in || 'Never'}</span><button class="btn btn-xs" on:click={() => editRet(conv)}>Change</button>{/if}</span>
+  </div>
+  <div class="row">
+    <span>Auto show images</span>
+    <label class="toggle">
       <input type="checkbox" checked={getShowImages(conv)} on:change={() => toggleImages(conv)} />
       <span class="toggle-slider"></span>
     </label>
   </div>
 </div>{/each}{/if}
-</div></section>
+</section>
 
 <section class="sec"><h3 class="st">About</h3><div class="card">
   <div class="row"><span>App version</span><span class="mono">{serverInfo?.version || '1.0.0'}</span></div>
@@ -172,11 +171,9 @@
 .seg-btn:hover:not(.active){background:var(--color-bg-tertiary)}
 .sel{padding:.375rem .625rem;border:1px solid var(--color-border);border-radius:6px;background:var(--color-bg);color:var(--color-text);font-size:.8125rem;font-family:inherit;cursor:pointer;outline:none}
 .sel:focus{border-color:var(--color-accent)}
-.ret-row{display:flex;align-items:center;gap:.5rem;padding:.625rem 1rem;border-bottom:1px solid var(--color-border)}
-.ret-row:last-child{border-bottom:none}
-.ret-row.editing{background:var(--color-bg-tertiary)}
-.ret-name{flex:1;font-size:.875rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--color-text);min-width:0}
-.ret-controls{display:flex;align-items:center;gap:.5rem;flex-shrink:0}
+.conv-card{margin-bottom:.75rem}
+.conv-head{display:flex;align-items:center;gap:.5rem;padding:.625rem .875rem;border-bottom:1px solid var(--color-border)}
+.conv-name{font-size:.875rem;font-weight:600;flex:1}
 .ret-sel{min-width:80px}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:.5rem .875rem;font-size:.8125rem;font-weight:600;border:none;border-radius:6px;cursor:pointer;font-family:inherit;white-space:nowrap;background:var(--color-bg-tertiary);color:var(--color-text)}
 .btn-xs{padding:.25rem .5rem;font-size:.75rem}
