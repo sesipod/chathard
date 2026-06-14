@@ -31,6 +31,8 @@
   let isScrolledUp = false;
   let showMenu = false;
   let showRetentionPicker = false;
+  let showRetentionConfirm = false;
+  let pendingRetentionValue = '';
 
   const retentionOptions = ['Never', '1h', '24h', '7d', '30d', '90d'];
 
@@ -145,14 +147,40 @@
     showRetentionPicker = false;
     const convId = conversation.user_id || conversation.id;
     if (value === currentRetention) return;
-    dispatch('retention', { conversationId: convId, expiresIn: value === 'Never' ? '' : value });
+
+    // "Never" (clearing retention) or same value — no confirmation needed
+    if (value === 'Never') {
+      dispatch('retention', { conversationId: convId, expiresIn: '' });
+      return;
+    }
+
+    // For non-"Never" values, show confirmation warning
+    pendingRetentionValue = value;
+    showRetentionConfirm = true;
+  }
+
+  function confirmRetention() {
+    showRetentionConfirm = false;
+    const convId = conversation.user_id || conversation.id;
+    dispatch('retention', { conversationId: convId, expiresIn: pendingRetentionValue });
+    pendingRetentionValue = '';
+  }
+
+  function cancelRetention() {
+    showRetentionConfirm = false;
+    pendingRetentionValue = '';
   }
 
   function handleRetentionChange(e) {
     const value = e.target.value;
     if (value && value !== currentRetention) {
       const convId = conversation.user_id || conversation.id;
-      dispatch('retention', { conversationId: convId, expiresIn: value === 'Never' ? '' : value });
+      if (value === 'Never') {
+        dispatch('retention', { conversationId: convId, expiresIn: '' });
+        return;
+      }
+      pendingRetentionValue = value;
+      showRetentionConfirm = true;
     }
   }
 
@@ -260,6 +288,26 @@
     </div>
   {/if}
 
+  <!-- Retention confirmation dialog -->
+  {#if showRetentionConfirm}
+    <div class="retention-confirm-overlay" on:click={cancelRetention}>
+      <div class="retention-confirm-dialog" on:click|stopPropagation>
+        <h3 class="confirm-title">Confirm Auto-Delete</h3>
+        <p class="confirm-body">
+          Your messages older than <strong>{pendingRetentionValue}</strong> in this conversation will be
+          <strong>permanently deleted</strong> after the set time. This action <strong>cannot be undone</strong>.
+        </p>
+        <p class="confirm-note">
+          Only your sent messages are affected — the other person's messages will not be deleted.
+        </p>
+        <div class="confirm-actions">
+          <button class="confirm-btn cancel" on:click={cancelRetention}>Cancel</button>
+          <button class="confirm-btn confirm" on:click={confirmRetention}>Confirm</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <!-- Message list -->
   <div
     class="message-list"
@@ -335,5 +383,15 @@
   .empty-messages { flex:1; display:flex; align-items:center; justify-content:center; padding:2rem; color:var(--color-text-muted); font-size:.875rem; text-align:center; }
   .scroll-fab { position:absolute; bottom:64px; right:1.25rem; z-index:5; display:flex; align-items:center; justify-content:center; width:40px; height:40px; border:none; border-radius:50%; background:var(--color-accent); color:#fff; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,.3); transition:opacity .15s,transform .15s; }
   .scroll-fab:hover { opacity:.9; transform:scale(1.05); }
+  .retention-confirm-overlay { position:absolute; inset:0; z-index:30; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.5); padding:1rem; }
+  .retention-confirm-dialog { max-width:380px; width:100%; padding:1.25rem; border-radius:12px; background:var(--color-bg-secondary); border:1px solid var(--color-border); box-shadow:0 8px 32px rgba(0,0,0,.4); }
+  .confirm-title { font-size:1rem; font-weight:700; color:var(--color-text); margin:0 0 .75rem; }
+  .confirm-body { font-size:.8125rem; color:var(--color-text); line-height:1.5; margin:0 0 .5rem; }
+  .confirm-note { font-size:.75rem; color:var(--color-text-muted); line-height:1.4; margin:0 0 1rem; padding:.5rem .625rem; background:var(--color-bg-tertiary); border-radius:6px; }
+  .confirm-actions { display:flex; gap:.5rem; justify-content:flex-end; }
+  .confirm-btn { padding:.5rem 1rem; border:none; border-radius:8px; font-size:.8125rem; font-weight:600; font-family:inherit; cursor:pointer; transition:opacity .12s; }
+  .confirm-btn:hover { opacity:.85; }
+  .confirm-btn.cancel { background:var(--color-bg-tertiary); color:var(--color-text); }
+  .confirm-btn.confirm { background:var(--color-danger,#e74c3c); color:#fff; }
   @media (max-width:767px) { .back-btn { display:flex; } .scroll-fab { bottom:72px; } }
 </style>

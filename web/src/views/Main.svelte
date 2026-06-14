@@ -383,6 +383,10 @@
         expiresIn: expiresIn || '',
       });
       await chatStore.loadConversations();
+      // Reload messages so the on-read retention filter takes effect immediately
+      if (conversationId) {
+        await chatStore.loadMessagesWithType(conversationId, isGroup);
+      }
       showToast('Retention updated');
     } catch {
       showToast('Failed to update retention');
