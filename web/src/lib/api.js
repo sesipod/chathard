@@ -198,7 +198,12 @@ const api = {
       headers: headers(),
       body: JSON.stringify({
         encrypted_name: Array.from(encryptedName),
-        members,
+        encrypted_symmetric_key: [],
+        members: members.map(id => ({
+          user_id: id,
+          encrypted_group_key: [],
+          encrypted_member_metadata: [],
+        })),
       }),
     });
     await throwIfNotOk(res);
@@ -244,6 +249,7 @@ const api = {
   async uploadFile(file) {
     const form = new FormData();
     form.append('file', file);
+    form.append('encrypted_metadata', '');
     const res = await fetch('/api/files/upload', {
       method: 'POST',
       headers: { Authorization: `Bearer ${getToken()}` }, // no Content-Type — browser sets multipart
