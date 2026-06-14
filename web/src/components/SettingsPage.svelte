@@ -34,17 +34,17 @@
   function trunc(s, n) { return s?.length > n ? s.slice(0, n) + '…' : s || ''; }
   function setTheme(m) { settings.setTheme(m.toLowerCase()); }
   function setDefRet(e) { settings.setDefaultRetention(e.target.value); }
-  function editRet(c) { editingRetentionConv = c; editingRetentionValue = 'Never'; }
+  function editRet(c) { editingRetentionConv = c; editingRetentionValue = 'Never'; editingRetentionConv = editingRetentionConv; }
   async function saveRet() {
     if (!editingRetentionConv) return;
     try { await api.updateRetention({ conversationWith: editingRetentionConv.user_id || editingRetentionConv.id, expiresIn: editingRetentionValue === 'Never' ? '' : editingRetentionValue }); } catch {}
     editingRetentionConv = null;
+    editingRetentionConv = editingRetentionConv; // trigger reactivity
   }
-  function cancelRet() { editingRetentionConv = null; }
+  function cancelRet() { editingRetentionConv = null; editingRetentionConv = editingRetentionConv; }
   async function doLogout() { await auth.logout(); }
   function doExport() { confirmExportKey = false; }
   function convName(c) { return c.handle || c.name || 'Unknown'; }
-  function isEditing(c) { const id = editingRetentionConv?.user_id || editingRetentionConv?.id; return id === (c.user_id || c.id); }
   function convKey(c) { return c.user_id || c.id; }
 
   // Per-conversation image toggle state (reactive, synced with localStorage)
@@ -110,7 +110,7 @@
   </div>
   <div class="row">
     <span>Default auto-delete</span>
-    <span>{#if isEditing(conv)}<select class="sel ret-sel" bind:value={editingRetentionValue}>{#each retentionOptions as opt}<option value={opt}>{opt}</option>{/each}</select><button class="btn btn-xs btn-primary" on:click={saveRet}>Save</button><button class="btn btn-xs" on:click={cancelRet}>Cancel</button>{:else}<span class="badge ret-badge">{conv.expires_in || 'Never'}</span><button class="btn btn-xs" on:click={() => editRet(conv)}>Change</button>{/if}</span>
+    <span>{#if editingRetentionConv && (editingRetentionConv.user_id || editingRetentionConv.id) === (conv.user_id || conv.id)}<select class="sel ret-sel" bind:value={editingRetentionValue}>{#each retentionOptions as opt}<option value={opt}>{opt}</option>{/each}</select><button class="btn btn-xs btn-primary" on:click={saveRet}>Save</button><button class="btn btn-xs" on:click={cancelRet}>Cancel</button>{:else}<span class="badge ret-badge">{conv.expires_in || 'Never'}</span><button class="btn btn-xs" on:click={() => editRet(conv)}>Change</button>{/if}</span>
   </div>
   <div class="row">
     <span>Auto show images</span>
