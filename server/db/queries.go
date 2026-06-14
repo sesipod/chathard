@@ -210,11 +210,12 @@ func (q *Queries) MarkConversationRead(userID, conversationWith string, upToMsgI
 	return err
 }
 
-// GetConversationMessageIDs returns all message IDs in a 1:1 conversation.
+// GetConversationMessageIDs returns message IDs in a 1:1 conversation
+// that were SENT BY the specified user (per-user retention).
 func (q *Queries) GetConversationMessageIDs(userID, otherUserID string) ([]string, error) {
 	rows, err := q.db.Query(
-		`SELECT id FROM messages WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))`,
-		userID, otherUserID, otherUserID, userID,
+		`SELECT id FROM messages WHERE sender_id = ? AND recipient_id = ?`,
+		userID, otherUserID,
 	)
 	if err != nil {
 		return nil, err
@@ -292,14 +293,14 @@ func (q *Queries) GetConversations(userID string) ([]ConversationRow, error) {
 			COALESCE(SUBSTR(HEX(m.ciphertext), 1, 32), '') AS last_msg,
 			COALESCE((SELECT COUNT(*) FROM messages WHERE recipient_id = ? AND sender_id = u.id AND read_at IS NULL), 0) AS unread,
 			COALESCE(MAX(m.created_at), '') AS last_active,
-			MAX(m.expires_at) AS expires_at
+			MAX(CASE WHEN m.sender_id = ? THEN m.expires_at END) AS expires_at
 		FROM users u
 		INNER JOIN messages m ON (m.sender_id = u.id AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = u.id)
 		WHERE u.id != ?
 		GROUP BY u.id
 		ORDER BY last_active DESC
 	`
-	rows, err := q.db.Query(query, userID, userID, userID, userID)
+	rows, err := q.db.Query(query, userID, userID, userID, userID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -501,8 +502,10 @@ func (q *Queries) GetRecoveryCodesRemaining(userID string) (int, error) {
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 // DeleteExpiredMessages removes messages past their expires_at.
+// Uses RFC3339 comparison to match the format written by UpdateRetention.
 func (q *Queries) DeleteExpiredMessages() (int64, error) {
-	res, err := q.db.Exec(`DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at < datetime('now')`)
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := q.db.Exec(`DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at < ?`, now)
 	if err != nil {
 		return 0, err
 	}
@@ -511,7 +514,8 @@ func (q *Queries) DeleteExpiredMessages() (int64, error) {
 
 // DeleteExpiredFiles removes file metadata for expired files.
 func (q *Queries) DeleteExpiredFiles() ([]string, error) {
-	rows, err := q.db.Query(`SELECT id, encrypted_blob_path FROM files WHERE expires_at IS NOT NULL AND expires_at < datetime('now')`)
+	now := time.Now().UTC().Format(time.RFC3339)
+	rows, err := q.db.Query(`SELECT id, encrypted_blob_path FROM files WHERE expires_at IS NOT NULL AND expires_at < ?`, now)
 	if err != nil {
 		return nil, err
 	}
