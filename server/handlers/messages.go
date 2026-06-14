@@ -10,6 +10,24 @@ import (
 	"github.com/stuckpacket/tailchat/db"
 )
 
+// parseDuration extends time.ParseDuration with day ("d") support.
+// Go's time.ParseDuration only handles ns, us/µs, ms, s, m, h.
+// This converts "7d", "30d", "90d" etc. to the equivalent hour duration.
+func parseDuration(s string) (time.Duration, error) {
+	if len(s) < 2 {
+		return time.ParseDuration(s)
+	}
+	if s[len(s)-1] == 'd' {
+		hours := s[:len(s)-1] + "h"
+		d, err := time.ParseDuration(hours)
+		if err != nil {
+			return 0, err
+		}
+		return d * 24, nil
+	}
+	return time.ParseDuration(s)
+}
+
 // MessagesHandler handles message CRUD endpoints.
 type MessagesHandler struct {
 	queries *db.Queries
@@ -228,7 +246,7 @@ func (h *MessagesHandler) updateRetention(w http.ResponseWriter, r *http.Request
 
 	var expiresAt *time.Time
 	if req.ExpiresIn != "" {
-		d, err := time.ParseDuration(req.ExpiresIn)
+		d, err := parseDuration(req.ExpiresIn)
 		if err != nil {
 			http.Error(w, "Invalid expires_in", http.StatusBadRequest)
 			return
