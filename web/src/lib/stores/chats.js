@@ -148,7 +148,7 @@ export const activeMessages = derived(
 /** The active conversation object. */
 export const activeConversation = derived(
   [activeConversationId, conversations],
-  ([$activeId, $convs]) => $convs.find((c) => c.id === $activeId || c.user_id === $activeId) || null
+  ([$activeId, $convs]) => $convs.find((c) => (c.user_id || c.id) === $activeId || c.id === $activeId) || null
 );
 
 export const chatStore = {

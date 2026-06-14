@@ -180,7 +180,7 @@
   // ── Conversation selection ──
   function handleSelectConversation(e) {
     const conv = e.detail;
-    const convId = conv.id || conv.user_id;
+    const convId = conv.user_id || conv.id;
     chatStore.setActiveConversation(convId);
     chatStore.markAsRead(convId);
     chatStore.loadMessages(convId);
@@ -196,7 +196,7 @@
     const conv = $activeConversation;
     if (!conv || !text) return;
 
-    const convId = conv.id || conv.user_id;
+    const convId = conv.user_id || conv.id;
     const userId =
       currentUser?.uuid || sessionStorage.getItem('tailchat-user-id');
 
