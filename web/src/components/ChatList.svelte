@@ -17,8 +17,8 @@
 
   const dispatch = createEventDispatcher();
 
-  function handleSelect(conv) {
-    dispatch('select', conv);
+  function handleSelect(e) {
+    dispatch('select', e.detail);
   }
 </script>
 
