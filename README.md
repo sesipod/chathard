@@ -7,14 +7,29 @@
 
 ## What is TailChat?
 
-TailChat is a **Signal-style encrypted messenger** that runs exclusively over your [Tailscale](https://tailscale.com) network. Every byte stored on the server — messages, files, metadata, keys — is **client-side encrypted**. The server stores only opaque ciphertext blobs. No plaintext ever touches disk.
+TailChat is a **Signal-style encrypted messenger** that runs exclusively over your [Tailscale](https://tailscale.com) network. Every byte stored on the server — messages, files, metadata, keys — is **client-side encrypted**. The server stores only opaque ciphertext blobs.
 
 - **No passwords** — authenticate with Ed25519 keypairs stored in your browser
-- **No phone numbers** — just choose a username handle
+- **No phone numbers or usernames** — identity is keyfile-based (plaintext handles being removed)
+- **Group chat** — encrypted group conversations with per-member key distribution and rotation
+- **Real-time** — WebSocket push for instant message delivery and typing indicators
 - **No public internet** — accessible only to devices on your tailnet via `https://tailchat-server.your-tailnet.ts.net`
 - **PWA** — install on mobile, works offline, sends notifications
+- **Retention controls** — per-conversation auto-delete timers (1h, 24h, 7d, 30d, 90d)
 
 <img src="https://via.placeholder.com/800x400/020617/2563eb?text=TailChat+Screenshot" alt="TailChat UI" />
+
+---
+
+## 🚧 Migration in Progress: Zero-Knowledge Identity
+
+The last plaintext column in the database — `handle` (username) — is being removed. See [`new-plan.md`](./new-plan.md) for the full plan.
+
+**What's changing:**
+- **Login**: Handle text input → keyfile upload (download a `.json` keyfile at registration)
+- **Add friends**: Handle search → one-time invite codes (8-char, 24h expiry, hashed on server)
+- **Display names**: Server-side handles → client-side encrypted custom names (AES-256-GCM, never seen by server)
+- **No handle column** in `users` table after migration
 
 ---
 
@@ -23,18 +38,21 @@ TailChat is a **Signal-style encrypted messenger** that runs exclusively over yo
 ### Zero-Knowledge Server
 
 ```
-┌─────────────────────────┐
-│     TailChat Server      │
-│                          │
-│  • handles (plain)       │  ← Only plaintext lookup table
-│  • UUIDs (plain)         │  ← Message routing
-│  • public_keys (plain)   │  ← Needed for encryption setup
-│  ─────────────────────  │
-│  • messages (ciphered)   │  ← AES-256-GCM, per-message keys
-│  • group names (ciphered)│  ← Encrypted with group key
-│  • files (ciphered)      │  ← Unique AES key per file
-│  • metadata (ciphered)   │  ← Filenames, MIME types encrypted
-└─────────────────────────┘
+┌──────────────────────────────┐
+│       TailChat Server         │
+│                               │
+│  • handles (plain) ⚠️         │  ← Being removed — see migration below
+│  • UUIDs (plain)              │  ← Message routing
+│  • public_keys (plain)        │  ← Needed for encryption setup
+│  ────────────────────────    │
+│  • messages (ciphered)        │  ← AES-256-GCM, per-message keys
+│  • group names (ciphered)     │  ← Encrypted with group key
+│  • group metadata (ciphered)  │  ← Member names, encrypted per-member
+│  • files (ciphered)           │  ← Unique AES key per file
+│  • metadata (ciphered)        │  ← Filenames, MIME types encrypted
+└──────────────────────────────┘
+
+> ⚠️ **Migration in progress**: `handle` is the last plaintext column. After migration, the server stores no human-readable identifiers at all — only UUIDs and public keys.
 ```
 
 ### Key Hierarchy
@@ -48,10 +66,12 @@ Master Ed25519 Keypair (IndexedDB only — never leaves your device)
 
 ### Authentication
 
-- **Dual-layer**: Tailscale network identity + Ed25519 challenge-response
-- **Key blinding**: The master signing key never leaves your browser. A derived auth key handles login
-- **Session tokens**: SHA-256 hashed in the database — raw tokens are unrecoverable from a DB dump
+- **Dual-layer**: Tailscale network identity (first gate) + Ed25519 challenge-response (second gate)
+- **Key blinding**: The master signing key never leaves your browser. An HKDF-derived auth keypair (info `"tailchat-auth"`) handles login challenges
+- **Session tokens**: SHA-256 hashed in the database — raw tokens are unrecoverable from a DB dump. Stored in `sessionStorage` (cleared on tab close)
+- **Recovery codes**: 10 one-time codes protected by PBKDF2 (100K SHA-256 iterations) → AES-256-GCM. Constant-time hash comparison on server
 - **No passwords**: Auth proves ownership of your keypair via cryptographic challenge
+- **Keyfile login (v2)**: Upload downloaded keyfile → server identifies by `user_id` → challenge-response → session token
 
 ### Encryption
 
@@ -61,24 +81,53 @@ Master Ed25519 Keypair (IndexedDB only — never leaves your device)
 | Group Messages | AES-256-GCM with per-member encrypted group key (key rotation on member changes) |
 | File Attachments | AES-256-GCM (unique key per file, 1MB chunked encryption) |
 | Recovery Codes | PBKDF2 (100K iterations, SHA-256) → AES-256-GCM |
+| Contact Names (v2) | HKDF-SHA256 → AES-256-GCM (derived from master key, stored client-side) |
 
 ### What an Attacker Sees (Database Dump)
 
 ```sql
--- users table: handles & public keys (designed to be public)
+-- users table: handles (plain — ⚠️ being removed) & public keys (designed to be public)
 alice | \x8a3f... | \xb4e2... | \x9c1d...
 
 -- messages table: all ciphertext
 \xf3a1b2c8d4... | \xe5f6... | \x12ab...
 
--- groups table: encrypted names
+-- groups table: encrypted names + encrypted member metadata
 \x44dd88aa...
 
--- files table: encrypted metadata
-\x9b2c3d...
+-- group_members table: per-member encrypted group keys
+\xaabb11...
+
+-- files table: encrypted metadata + opaque blob paths
+\x9b2c3d... | \xab/shards/...
+
+-- sessions table: hashed tokens (no raw tokens recoverable)
+a1b2c3d4e5f6...
+
+-- encrypted_key_backups: PBKDF2-protected master keys
+\x7e8f...
 ```
 
-**No message content, no group names, no filenames, no private keys — ever.**
+> **No message content, no group names, no filenames, no private keys, no raw session tokens — ever.**
+> The only human-readable text is the `handle` column, which is actively being migrated out.
+
+### Rate Limiting
+
+| Endpoint | Limit | Lockout |
+|----------|-------|---------|
+| Registration | 3 per hour | — |
+| Messages | 60 per minute | — |
+| User Search | 30 per minute | — |
+| Recovery | 3 per hour | 1-hour lock after 3 failures |
+
+---
+
+## Current Version
+
+**v1.1.0** (Iteration 14)
+- All core features complete: registration, login, 1:1 messaging, group chat, file uploads, WebSocket real-time delivery
+- Security hardening: constant-time comparison, rate limiting, session token hashing
+- Upcoming v2: zero-knowledge identity migration (see [`new-plan.md`](./new-plan.md))
 
 ---
 
@@ -104,13 +153,13 @@ Browser (Svelte PWA)                    Ubuntu 26 Server
 
 | Layer | Technology |
 |-------|-----------|
-| Server | Go 1.26, `net/http`, `modernc.org/sqlite` |
-| Database | SQLite (single file, WAL mode) |
+| Server | Go 1.23, `net/http`, `modernc.org/sqlite` |
+| Database | SQLite (single file, WAL mode, `_busy_timeout=5000`) |
 | Real-time | `gorilla/websocket` |
 | Frontend | Svelte 5, Vite 6, Tailwind CSS v4 |
 | Router | `svelte-spa-router` (hash-based) |
-| Crypto (primary) | Web Crypto API (Ed25519, AES-GCM, HKDF) |
-| Crypto (fallback) | `@noble/curves` (Firefox/Safari) |
+| Crypto (primary) | Web Crypto API (Ed25519, X25519, AES-GCM, HKDF, PBKDF2) |
+| Crypto (fallback) | `@noble/curves` (Firefox/Safari — Ed25519, X25519) |
 | Deployment | `install.sh`, `update.sh`, systemd |
 | OS | Ubuntu 26 Server (headless) |
 
@@ -187,17 +236,38 @@ cd ../web && npm run dev
 ```
 ├── scripts/
 │   ├── install.sh        # One-shot server provisioning
-│   ├── update.sh         # Deploy updates
+│   ├── update.sh         # Deploy updates with atomic swap
 │   ├── config.yaml       # Server config template
 │   └── tailchat.service  # systemd unit
 ├── server/
-│   ├── main.go           # HTTP server, routing, middleware
+│   ├── main.go           # HTTP server, routing, middleware chain
 │   ├── config.go         # YAML config loading
-│   ├── db/               # Schema, queries, migrations
-│   ├── handlers/         # REST + WebSocket handlers
-│   ├── middleware/        # Rate limiting
-│   └── storage/          # Encrypted blob storage
+│   ├── db/
+│   │   ├── schema.sql    # Full schema reference
+│   │   ├── queries.go    # All prepared SQL statements
+│   │   └── migrations/   # 001_init, 002_user_retention
+│   ├── handlers/         # auth, register, recover, messages, files, groups, ws, invites (v2)
+│   ├── middleware/        # Rate limiting (per-endpoint buckets)
+│   └── storage/          # Encrypted blob storage with hex-sharding
 └── web/
+    └── src/
+        ├── views/           # Login.svelte, Main.svelte
+        ├── components/      # App.svelte, ChatList, Conversation, MessageBubble, MessageInput,
+        │                    # LeftPanel, RightPanel, SettingsPage, NewChatModal, NewGroupModal,
+        │                    # EmptyState, FriendsPage (v2)
+        │   └── common/      # Avatar, Modal, SearchInput
+        └── lib/
+            ├── api.js       # REST + WebSocket client
+            ├── db.js        # IndexedDB wrapper (keys, contacts, drafts, group_keys, settings)
+            ├── contacts.js  # (v2) Display name resolution + Svelte store
+            ├── stores/      # auth.js, chats.js, settings.js
+            └── crypto/
+                ├── keygen.js       # Ed25519 → X25519 + HKDF auth derivation
+                ├── encrypt.js      # X25519 ECDH → AES-256-GCM messaging
+                ├── file-encrypt.js # Chunked AES-256-GCM file encryption
+                ├── recover.js      # PBKDF2 recovery code encrypt/decrypt
+                └── contact-encrypt.js # (v2) AES-256-GCM contact name encryption
+```
     ├── src/
     │   ├── lib/crypto/    # Ed25519, X25519, AES-GCM, PBKDF2
     │   ├── lib/stores/    # Auth, chats, settings (Svelte)
