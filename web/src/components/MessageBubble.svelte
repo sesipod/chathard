@@ -99,7 +99,7 @@
   .date-separator { display:flex; align-items:center; justify-content:center; margin:1rem 0 .5rem; width:100%; }
   .date-label { padding:.25rem .75rem; border-radius:4px; background:var(--color-bg-tertiary); color:var(--color-text-muted); font-size:.75rem; font-weight:600; text-transform:uppercase; letter-spacing:.025em; }
   .system-message { font-size:.75rem; color:var(--color-text-muted); text-align:center; padding:.5rem 0; opacity:.75; max-width:80%; }
-  .bubble-row { max-width:75%; min-width:80px; }
+  .bubble-row { max-width:75%; min-width:80px; width:fit-content; }
   .bubble { padding:.5rem .75rem; border-radius:12px; position:relative; word-wrap:break-word; overflow-wrap:break-word; }
   .bubble.sent { background:var(--color-sent); color:#fff; border-bottom-right-radius:4px; }
   .bubble.received { background:var(--color-received); color:var(--color-text); border-bottom-left-radius:4px; }

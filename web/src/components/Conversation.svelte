@@ -247,7 +247,7 @@
         <MessageBubble
           message={row.message}
           isOwn={row.message.is_own ?? (row.message.sender_id === currentUserId)}
-          senderHandle={row.message.sender_handle || (isGroup ? row.message.sender_handle : '')}
+          senderHandle={row.message.is_own ? '' : (conversation.handle || '')}
           showDateSeparator={row.showDateSeparator}
           dateText={row.dateText}
         />
