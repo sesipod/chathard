@@ -61,6 +61,15 @@
     loadImage(fileId);
   }
 
+  // Clean up image when auto-show is toggled off — resets local state so the
+  // template falls through to the download button, and re-loads when toggled on.
+  $: if (!showImages && imageUrl) {
+    URL.revokeObjectURL(imageUrl);
+    imageUrl = '';
+    imageLoaded = false;
+    imageError = false;
+  }
+
   async function loadImage(id) {
     try {
       const { default: api } = await import('../lib/api.js');
