@@ -30,12 +30,16 @@
   let messageListEl;
   let isScrolledUp = false;
   let showMenu = false;
+  let showRetentionPicker = false;
+
+  const retentionOptions = ['Never', '1h', '24h', '7d', '30d', '90d'];
 
   $: displayName = conversation.handle || conversation.name || 'Unknown';
   $: isGroup = conversation.type === 'group';
   $: currentUserId = sessionStorage.getItem('tailchat-user-id') || '';
-  $: retentionLabel = conversation.retention && conversation.retention !== 'Never'
-    ? `Auto-delete: ${conversation.retention}`
+  $: currentRetention = conversation.expires_in || 'Never';
+  $: retentionLabel = currentRetention && currentRetention !== 'Never'
+    ? `Auto-delete: ${currentRetention}`
     : '';
 
   /** Group messages by day and generate date separator data. */
@@ -133,14 +137,22 @@
   function handleMenuAction(action) {
     showMenu = false;
     if (action === 'files') dispatch('openFiles', conversation.id);
-    if (action === 'retention') dispatch('retention', conversation);
+    if (action === 'retention') showRetentionPicker = !showRetentionPicker;
     if (action === 'leave') dispatch('leaveGroup', conversation.id);
+  }
+
+  function handleRetentionSelect(value) {
+    showRetentionPicker = false;
+    const convId = conversation.user_id || conversation.id;
+    if (value === currentRetention) return;
+    dispatch('retention', { conversationId: convId, expiresIn: value === 'Never' ? '' : value });
   }
 
   function handleRetentionChange(e) {
     const value = e.target.value;
-    if (value && value !== conversation.retention) {
-      dispatch('retention', { conversationId: conversation.id, expiresIn: value });
+    if (value && value !== currentRetention) {
+      const convId = conversation.user_id || conversation.id;
+      dispatch('retention', { conversationId: convId, expiresIn: value === 'Never' ? '' : value });
     }
   }
 
@@ -232,6 +244,22 @@
     </div>
   </header>
 
+  <!-- Retention picker -->
+  {#if showRetentionPicker}
+    <div class="retention-picker">
+      <span class="retention-label">Auto-delete messages after:</span>
+      <div class="retention-options">
+        {#each retentionOptions as opt}
+          <button
+            class="retention-btn"
+            class:active={opt === currentRetention}
+            on:click={() => handleRetentionSelect(opt)}
+          >{opt}</button>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   <!-- Message list -->
   <div
     class="message-list"
@@ -297,6 +325,12 @@
   .menu-item:hover { background:var(--color-bg-tertiary); }
   .menu-item.danger { color:var(--color-danger); }
   .menu-divider { height:1px; margin:.25rem .5rem; background:var(--color-border); }
+  .retention-picker { display:flex; flex-direction:column; gap:.375rem; padding:.5rem .75rem; border-bottom:1px solid var(--color-border); background:var(--color-bg-secondary); flex-shrink:0; }
+  .retention-label { font-size:.6875rem; color:var(--color-text-muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .retention-options { display:flex; gap:.25rem; flex-wrap:wrap; }
+  .retention-btn { padding:.25rem .5rem; border:1px solid var(--color-border); border-radius:6px; background:var(--color-bg); color:var(--color-text-muted); font-size:.75rem; font-family:inherit; cursor:pointer; transition:all .12s; }
+  .retention-btn:hover { border-color:var(--color-accent); color:var(--color-text); }
+  .retention-btn.active { background:var(--color-accent); color:#fff; border-color:var(--color-accent); }
   .message-list { flex:1; overflow-y:auto; padding:.5rem 0; display:flex; flex-direction:column; }
   .empty-messages { flex:1; display:flex; align-items:center; justify-content:center; padding:2rem; color:var(--color-text-muted); font-size:.875rem; text-align:center; }
   .scroll-fab { position:absolute; bottom:64px; right:1.25rem; z-index:5; display:flex; align-items:center; justify-content:center; width:40px; height:40px; border:none; border-radius:50%; background:var(--color-accent); color:#fff; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,.3); transition:opacity .15s,transform .15s; }

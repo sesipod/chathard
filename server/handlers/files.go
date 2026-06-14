@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/stuckpacket/tailchat/db"
 	"github.com/stuckpacket/tailchat/storage"
@@ -54,9 +55,10 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	isChunked := strings.HasPrefix(contentType, "multipart/form-data")
 
 	var (
-		fileID          string
-		encryptedData   []byte
-		encryptedMeta   []byte
+		fileID        string
+		encryptedData []byte
+		encryptedMeta []byte
+		expiresIn     string
 	)
 
 	if isChunked {
@@ -86,13 +88,15 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 
 		encryptedMetaStr := r.FormValue("encrypted_metadata")
 		encryptedMeta = []byte(encryptedMetaStr)
+		expiresIn = r.FormValue("expires_in")
 
 		fileID = storage.GenerateUUID()
 	} else {
 		// Simple JSON upload for smaller files
 		var req struct {
-			Ciphertext       []byte `json:"ciphertext"`
-			EncryptedMeta    []byte `json:"encrypted_metadata"`
+			Ciphertext    []byte `json:"ciphertext"`
+			EncryptedMeta []byte `json:"encrypted_metadata"`
+			ExpiresIn     string `json:"expires_in"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -106,7 +110,20 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 
 		encryptedData = req.Ciphertext
 		encryptedMeta = req.EncryptedMeta
+		expiresIn = req.ExpiresIn
 		fileID = storage.GenerateUUID()
+	}
+
+	// Compute file expiration
+	var expiresAt *time.Time
+	if expiresIn != "" {
+		d, err := parseDuration(expiresIn)
+		if err != nil {
+			http.Error(w, "Invalid expires_in", http.StatusBadRequest)
+			return
+		}
+		t := time.Now().Add(d)
+		expiresAt = &t
 	}
 
 	// Store blob
@@ -116,7 +133,7 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.queries.InsertFile(fileID, userID, fileID[:2]+"/"+fileID+".enc", encryptedMeta, int64(len(encryptedData)), nil); err != nil {
+	if err := h.queries.InsertFile(fileID, userID, fileID[:2]+"/"+fileID+".enc", encryptedMeta, int64(len(encryptedData)), expiresAt); err != nil {
 		h.store.DeleteBlob(fileID)
 		log.Printf("upload: insert file record %s (meta=%d data=%d): %v", fileID, len(encryptedMeta), len(encryptedData), err)
 		http.Error(w, "Failed to create file record", http.StatusInternalServerError)

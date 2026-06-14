@@ -216,6 +216,9 @@
     };
     chatStore.addMessage(convId, optimisticMsg);
 
+    // Derive expiresIn from conversation's current retention setting
+    const expiresIn = conv.expires_in && conv.expires_in !== 'Never' ? conv.expires_in : undefined;
+
     try {
       const result = await api.sendMessage({
         recipientId: conv.type === 'group' ? null : convId,
@@ -223,6 +226,7 @@
         ciphertext: new TextEncoder().encode(text),
         ephemeralPub: new Uint8Array(32),
         nonce: new Uint8Array(12),
+        expiresIn,
       });
 
       // Replace optimistic message with server response
@@ -265,8 +269,10 @@
   }
 
   async function handleAttachFile(e) {
+    const conv = $activeConversation;
+    const expiresIn = conv?.expires_in && conv.expires_in !== 'Never' ? conv.expires_in : undefined;
     try {
-      const result = await api.uploadFile(e.detail);
+      const result = await api.uploadFile(e.detail, expiresIn);
       if (result && result.file_id) {
         const conv = $activeConversation;
         const convId = conv.user_id || conv.id;

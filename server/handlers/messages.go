@@ -90,12 +90,12 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type sendMessageReq struct {
-	RecipientID      string `json:"recipient_id"`
-	GroupID          string `json:"group_id"`
-	Ciphertext       []byte `json:"ciphertext"`
-	EphemeralPubKey  []byte `json:"ephemeral_public_key"`
-	Nonce            []byte `json:"nonce"`
-	ExpiresIn        string `json:"expires_in"` // e.g. "1h", "7d"
+	RecipientID     string `json:"recipient_id"`
+	GroupID         string `json:"group_id"`
+	Ciphertext      []byte `json:"ciphertext"`
+	EphemeralPubKey []byte `json:"ephemeral_public_key"`
+	Nonce           []byte `json:"nonce"`
+	ExpiresIn       string `json:"expires_in"` // e.g. "1h", "7d"
 }
 
 func (h *MessagesHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
@@ -117,8 +117,22 @@ func (h *MessagesHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var expiresAt *time.Time
-	if req.ExpiresIn != "" {
-		d, err := parseDuration(req.ExpiresIn)
+	expiresIn := req.ExpiresIn
+	if expiresIn == "" && req.RecipientID != "" {
+		// Auto-inherit retention from existing messages in the conversation
+		ret, err := h.queries.GetConversationRetention(userID, req.RecipientID)
+		if err == nil && ret != "" {
+			expiresIn = ret
+		}
+	}
+	if expiresIn == "" && req.GroupID != "" {
+		ret, err := h.queries.GetGroupRetention(req.GroupID)
+		if err == nil && ret != "" {
+			expiresIn = ret
+		}
+	}
+	if expiresIn != "" {
+		d, err := parseDuration(expiresIn)
 		if err != nil {
 			http.Error(w, "Invalid expires_in", http.StatusBadRequest)
 			return

@@ -113,17 +113,21 @@ const api = {
     return data.messages ?? []; // server wraps in { messages: [...] }, may be null
   },
 
-  async sendMessage({ recipientId, groupId, ciphertext, ephemeralPub, nonce }) {
+  async sendMessage({ recipientId, groupId, ciphertext, ephemeralPub, nonce, expiresIn }) {
+    const body = {
+      recipient_id: recipientId || null,
+      group_id: groupId || null,
+      ciphertext: Array.from(ciphertext),
+      ephemeral_public_key: Array.from(ephemeralPub),
+      nonce: Array.from(nonce),
+    };
+    if (expiresIn) {
+      body.expires_in = expiresIn;
+    }
     const res = await fetch('/api/messages', {
       method: 'POST',
       headers: headers(),
-      body: JSON.stringify({
-        recipient_id: recipientId || null,
-        group_id: groupId || null,
-        ciphertext: Array.from(ciphertext),
-        ephemeral_public_key: Array.from(ephemeralPub),
-        nonce: Array.from(nonce),
-      }),
+      body: JSON.stringify(body),
     });
     await throwIfNotOk(res);
     return res.json();
@@ -246,10 +250,13 @@ const api = {
   },
 
   // ── Files ──
-  async uploadFile(file) {
+  async uploadFile(file, expiresIn) {
     const form = new FormData();
     form.append('file', file);
     form.append('encrypted_metadata', '');
+    if (expiresIn) {
+      form.append('expires_in', expiresIn);
+    }
     const res = await fetch('/api/files/upload', {
       method: 'POST',
       headers: { Authorization: `Bearer ${getToken()}` }, // no Content-Type — browser sets multipart

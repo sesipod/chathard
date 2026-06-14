@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -211,11 +212,11 @@ func (q *Queries) MarkConversationRead(userID, conversationWith string, upToMsgI
 }
 
 // GetConversationMessageIDs returns message IDs in a 1:1 conversation
-// that were SENT BY the specified user (per-user retention).
+// including messages from BOTH participants (conversation-level retention).
 func (q *Queries) GetConversationMessageIDs(userID, otherUserID string) ([]string, error) {
 	rows, err := q.db.Query(
-		`SELECT id FROM messages WHERE sender_id = ? AND recipient_id = ?`,
-		userID, otherUserID,
+		`SELECT id FROM messages WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))`,
+		userID, otherUserID, otherUserID, userID,
 	)
 	if err != nil {
 		return nil, err
@@ -248,6 +249,36 @@ func (q *Queries) GetGroupMessageIDs(groupID string) ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// GetGroupRetention returns the retention duration string for a group conversation.
+func (q *Queries) GetGroupRetention(groupID string) (string, error) {
+	var expiresAt, createdAt string
+	err := q.db.QueryRow(`
+		SELECT expires_at, created_at FROM messages
+		WHERE group_id = ? AND expires_at IS NOT NULL
+		ORDER BY created_at DESC LIMIT 1
+	`, groupID).Scan(&expiresAt, &createdAt)
+	if err != nil {
+		return "", err
+	}
+	expTime, err1 := time.Parse(time.RFC3339, expiresAt)
+	createdTime, err2 := time.Parse(time.RFC3339, createdAt)
+	if err1 != nil || err2 != nil {
+		return "", nil
+	}
+	diff := expTime.Sub(createdTime)
+	if diff <= 0 {
+		return "", nil
+	}
+	hours := int(diff.Hours())
+	if hours < 1 {
+		return "<1h", nil
+	}
+	if hours < 24 {
+		return fmt.Sprintf("%dh", hours), nil
+	}
+	return fmt.Sprintf("%dd", hours/24), nil
 }
 
 // expiresInToSQL converts a shorthand duration to a SQLite datetime modifier.
@@ -405,11 +436,11 @@ func (q *Queries) GetUserGroups(userID string) ([]GroupRow, error) {
 
 // GroupWithActivity extends GroupRow with the latest message timestamp.
 type GroupWithActivity struct {
-	ID                   string
-	EncryptedName        []byte
+	ID                    string
+	EncryptedName         []byte
 	EncryptedSymmetricKey []byte
-	CreatedAt            string
-	LastActive           string
+	CreatedAt             string
+	LastActive            string
 }
 
 // GetUserGroupsWithActivity returns groups the user is a member of,
@@ -535,6 +566,39 @@ func (q *Queries) GetRecoveryCodesRemaining(userID string) (int, error) {
 	return count, err
 }
 
+// GetConversationRetention returns the retention duration string (e.g. "1h", "7d")
+// for a 1:1 conversation, based on the most recent message that had expires_at set.
+// Returns empty string if no messages in the conversation have retention.
+func (q *Queries) GetConversationRetention(userID, otherUserID string) (string, error) {
+	var expiresAt, createdAt string
+	err := q.db.QueryRow(`
+		SELECT expires_at, created_at FROM messages
+		WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))
+		AND expires_at IS NOT NULL
+		ORDER BY created_at DESC LIMIT 1
+	`, userID, otherUserID, otherUserID, userID).Scan(&expiresAt, &createdAt)
+	if err != nil {
+		return "", err
+	}
+	expTime, err1 := time.Parse(time.RFC3339, expiresAt)
+	createdTime, err2 := time.Parse(time.RFC3339, createdAt)
+	if err1 != nil || err2 != nil {
+		return "", nil
+	}
+	diff := expTime.Sub(createdTime)
+	if diff <= 0 {
+		return "", nil
+	}
+	hours := int(diff.Hours())
+	if hours < 1 {
+		return "<1h", nil
+	}
+	if hours < 24 {
+		return fmt.Sprintf("%dh", hours), nil
+	}
+	return fmt.Sprintf("%dd", hours/24), nil
+}
+
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 // DeleteExpiredMessages removes messages past their expires_at.
@@ -577,12 +641,12 @@ func (q *Queries) RemoveFileRecord(path string) error {
 // ─── Row types ────────────────────────────────────────────────────────────────
 
 type UserRow struct {
-	ID                     string `json:"id"`
-	Handle                 string `json:"handle"`
-	PublicKeyEd25519       []byte `json:"public_key_ed25519"`
-	PublicKeyX25519        []byte `json:"public_key_x25519"`
+	ID                      string `json:"id"`
+	Handle                  string `json:"handle"`
+	PublicKeyEd25519        []byte `json:"public_key_ed25519"`
+	PublicKeyX25519         []byte `json:"public_key_x25519"`
 	DerivedPublicKeyEd25519 []byte `json:"derived_public_key_ed25519"`
-	CreatedAt              string `json:"created_at"`
+	CreatedAt               string `json:"created_at"`
 }
 
 type SessionRow struct {
@@ -593,23 +657,23 @@ type SessionRow struct {
 }
 
 type MessageRow struct {
-	ID                string  `json:"id"`
-	SenderID          string  `json:"sender_id"`
-	RecipientID       *string `json:"recipient_id"`
-	GroupID           *string `json:"group_id"`
-	Ciphertext        []byte  `json:"ciphertext"`
-	EphemeralPubKey   []byte  `json:"ephemeral_public_key"`
-	Nonce             []byte  `json:"nonce"`
-	CreatedAt         string  `json:"created_at"`
-	ExpiresAt         *string `json:"expires_at"`
-	ReadAt            *string `json:"read_at"`
+	ID              string  `json:"id"`
+	SenderID        string  `json:"sender_id"`
+	RecipientID     *string `json:"recipient_id"`
+	GroupID         *string `json:"group_id"`
+	Ciphertext      []byte  `json:"ciphertext"`
+	EphemeralPubKey []byte  `json:"ephemeral_public_key"`
+	Nonce           []byte  `json:"nonce"`
+	CreatedAt       string  `json:"created_at"`
+	ExpiresAt       *string `json:"expires_at"`
+	ReadAt          *string `json:"read_at"`
 }
 
 type GroupRow struct {
-	ID                   string
-	EncryptedName        []byte
+	ID                    string
+	EncryptedName         []byte
 	EncryptedSymmetricKey []byte
-	CreatedAt            string
+	CreatedAt             string
 }
 
 type FileRow struct {
@@ -623,15 +687,17 @@ type FileRow struct {
 }
 
 type RecoveryBackupRow struct {
-	RecoveryCodeHash   string
+	RecoveryCodeHash    string
 	EncryptedPrivateKey []byte
-	Salt               []byte
-	AuthSalt           []byte
+	Salt                []byte
+	AuthSalt            []byte
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-func scanUser(s interface{ Scan(dest ...interface{}) error }) (*UserRow, error) {
+func scanUser(s interface {
+	Scan(dest ...interface{}) error
+}) (*UserRow, error) {
 	u := &UserRow{}
 	if err := s.Scan(&u.ID, &u.Handle, &u.PublicKeyEd25519, &u.PublicKeyX25519, &u.DerivedPublicKeyEd25519, &u.CreatedAt); err != nil {
 		return nil, err
@@ -651,7 +717,9 @@ func normalizeTimestamp(s *string) {
 	}
 }
 
-func scanMessage(s interface{ Scan(dest ...interface{}) error }) (*MessageRow, error) {
+func scanMessage(s interface {
+	Scan(dest ...interface{}) error
+}) (*MessageRow, error) {
 	m := &MessageRow{}
 	if err := s.Scan(&m.ID, &m.SenderID, &m.RecipientID, &m.GroupID, &m.Ciphertext, &m.EphemeralPubKey, &m.Nonce, &m.CreatedAt, &m.ExpiresAt, &m.ReadAt); err != nil {
 		return nil, err
