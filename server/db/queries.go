@@ -250,6 +250,28 @@ func (q *Queries) GetGroupMessageIDs(groupID string) ([]string, error) {
 	return ids, rows.Err()
 }
 
+// GetUserGroupMessageIDs returns message IDs sent BY a specific user in a group.
+// Used for per-user group retention — only the sender's own messages are affected.
+func (q *Queries) GetUserGroupMessageIDs(userID, groupID string) ([]string, error) {
+	rows, err := q.db.Query(
+		`SELECT id FROM messages WHERE sender_id = ? AND group_id = ?`,
+		userID, groupID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // expiresInToSQL converts a shorthand duration to a SQLite datetime modifier.
 // "1h" → "+1 hours", "24h" → "+24 hours", "7d" → "+7 days", etc.
 func expiresInToSQL(s string) string {
