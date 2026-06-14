@@ -296,10 +296,29 @@ func (h *MessagesHandler) updateRetention(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Store per-user retention setting — does NOT modify or delete messages
+	// Store per-user retention setting
 	if err := h.queries.SetUserRetention(userID, targetID, targetType, req.ExpiresIn); err != nil {
 		http.Error(w, "Failed to update retention", http.StatusInternalServerError)
 		return
+	}
+
+	// Set/clear expires_at on user's existing messages in this conversation
+	var msgIDs []string
+	var err error
+	if targetType == "direct" {
+		msgIDs, err = h.queries.GetConversationMessageIDs(userID, targetID)
+	} else {
+		msgIDs, err = h.queries.GetUserGroupMessageIDs(userID, targetID)
+	}
+	if err != nil {
+		http.Error(w, "Failed to get message IDs", http.StatusInternalServerError)
+		return
+	}
+	if len(msgIDs) > 0 {
+		if err := h.queries.UpdateRetention(msgIDs, req.ExpiresIn); err != nil {
+			http.Error(w, "Failed to update message retention", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)
