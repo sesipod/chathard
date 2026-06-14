@@ -46,8 +46,20 @@
   function convName(c) { return c.handle || c.name || 'Unknown'; }
   function isEditing(c) { const id = editingRetentionConv?.user_id || editingRetentionConv?.id; return id === (c.user_id || c.id); }
   function convKey(c) { return c.user_id || c.id; }
-  function getShowImages(c) { return settings.getAutoShowImages(convKey(c)); }
-  function toggleImages(c) { settings.setAutoShowImages(convKey(c), !getShowImages(c)); }
+
+  // Per-conversation image toggle state (reactive, synced with localStorage)
+  let imageToggles = {};
+  function getShowImages(c) {
+    const k = convKey(c);
+    if (!(k in imageToggles)) imageToggles[k] = settings.getAutoShowImages(k);
+    return imageToggles[k];
+  }
+  function toggleImages(c) {
+    const k = convKey(c);
+    imageToggles[k] = !getShowImages(c);
+    settings.setAutoShowImages(k, imageToggles[k]);
+    imageToggles = { ...imageToggles }; // trigger Svelte reactivity
+  }
 </script>
 
 {#if show}
@@ -94,18 +106,20 @@
 <div class="ret-row" class:editing={isEditing(conv)}>
   <Avatar name={convName(conv)} size={28} />
   <span class="ret-name">{convName(conv)}</span>
-  <label class="toggle" title="Auto-show images">
-    <input type="checkbox" checked={getShowImages(conv)} on:change={() => toggleImages(conv)} />
-    <span class="toggle-slider"></span>
-  </label>
-  {#if isEditing(conv)}
-  <select class="sel ret-sel" bind:value={editingRetentionValue}>{#each retentionOptions as opt}<option value={opt}>{opt}</option>{/each}</select>
-  <button class="btn btn-xs btn-primary" on:click={saveRet}>Save</button>
-  <button class="btn btn-xs" on:click={cancelRet}>Cancel</button>
-  {:else}
-  <span class="badge ret-badge">{conv.expires_in || 'Never'}</span>
-  <button class="btn btn-xs" on:click={() => editRet(conv)}>Change</button>
-  {/if}
+  <div class="ret-controls">
+    {#if isEditing(conv)}
+    <select class="sel ret-sel" bind:value={editingRetentionValue}>{#each retentionOptions as opt}<option value={opt}>{opt}</option>{/each}</select>
+    <button class="btn btn-xs btn-primary" on:click={saveRet}>Save</button>
+    <button class="btn btn-xs" on:click={cancelRet}>Cancel</button>
+    {:else}
+    <span class="badge ret-badge">{conv.expires_in || 'Never'}</span>
+    <button class="btn btn-xs" on:click={() => editRet(conv)}>Change</button>
+    {/if}
+    <label class="toggle" title="Auto-show images">
+      <input type="checkbox" checked={getShowImages(conv)} on:change={() => toggleImages(conv)} />
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
 </div>{/each}{/if}
 </div></section>
 
@@ -161,7 +175,8 @@
 .ret-row{display:flex;align-items:center;gap:.5rem;padding:.625rem 1rem;border-bottom:1px solid var(--color-border)}
 .ret-row:last-child{border-bottom:none}
 .ret-row.editing{background:var(--color-bg-tertiary)}
-.ret-name{flex:1;font-size:.875rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--color-text)}
+.ret-name{flex:1;font-size:.875rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--color-text);min-width:0}
+.ret-controls{display:flex;align-items:center;gap:.5rem;flex-shrink:0}
 .ret-sel{min-width:80px}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:.5rem .875rem;font-size:.8125rem;font-weight:600;border:none;border-radius:6px;cursor:pointer;font-family:inherit;white-space:nowrap;background:var(--color-bg-tertiary);color:var(--color-text)}
 .btn-xs{padding:.25rem .5rem;font-size:.75rem}
