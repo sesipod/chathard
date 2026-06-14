@@ -106,9 +106,12 @@
       const data = JSON.parse(event.data);
       switch (data.type) {
         case 'new_message': {
-          const msg = data.message || data;
-          const convId = msg.conversation_id || msg.sender_id;
-          chatStore.addMessage(convId, msg);
+          // Reload conversations and messages to get full encrypted content
+          const convId = data.sender_id; // the other user's ID
+          if (convId) {
+            chatStore.loadConversations();
+            chatStore.loadMessages(convId);
+          }
           break;
         }
         case 'read_receipt': {
