@@ -37,6 +37,29 @@
     }
   }
 
+  /** Detect file reference: 📎 filename (file_id) */
+  $: fileMatch = content.match(/^📎\s*(.+?)\s*\(([a-f0-9]{32})\)$/);
+  $: isFile = !!fileMatch;
+  $: fileName = fileMatch ? fileMatch[1] : '';
+  $: fileId = fileMatch ? fileMatch[2] : '';
+  $: displayContent = isFile ? `📎 ${fileName}` : content;
+
+  async function downloadFile() {
+    if (!fileId) return;
+    try {
+      const { default: api } = await import('../lib/api.js');
+      const blob = await api.downloadFile(fileId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName || 'download';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Download failed:', e);
+    }
+  }
+
   $: timeStr = formatTime(message.created_at);
   $: content = getContent(message);
   $: isSystem = !!message.is_system;
@@ -63,7 +86,14 @@
           <div class="sender-handle">{senderHandle}</div>
         {/if}
         <div class="bubble-content">
-          <span class="bubble-text">{content}</span>
+          {#if isFile}
+            <button class="file-download" on:click={downloadFile}>
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v2a2 2 0 002 2h6a2 2 0 002-2v-2M9 3v9M6 9l3 3 3-3"/></svg>
+              <span>{displayContent}</span>
+            </button>
+          {:else}
+            <span class="bubble-text">{displayContent}</span>
+          {/if}
         </div>
         <div class="bubble-meta">
           <span class="bubble-time">{timeStr}</span>
@@ -106,6 +136,8 @@
   .sender-handle { font-size:.75rem; font-weight:600; color:var(--color-accent); margin-bottom:.125rem; }
   .bubble-content { display:flex; flex-direction:column; }
   .bubble-text { font-size:.875rem; line-height:1.4; white-space:pre-wrap; }
+  .file-download { display:flex; align-items:center; gap:.5rem; background:none; border:none; color:inherit; cursor:pointer; padding:.25rem 0; font-size:.875rem; font-family:inherit; text-decoration:underline; text-underline-offset:3px; }
+  .file-download:hover { opacity:.8; }
   .bubble-meta { display:flex; align-items:center; justify-content:flex-end; gap:.25rem; margin-top:.125rem; }
   .bubble.sent .bubble-meta { justify-content:flex-end; }
   .bubble-time { font-size:.6875rem; opacity:.7; line-height:1; }
