@@ -140,11 +140,22 @@ func (h *FilesHandler) downloadFile(w http.ResponseWriter, r *http.Request, file
 		return
 	}
 
-	// Authorization: only the uploader can download the file
-	// In the future, extend to conversation partners / group members
+	// Allow download by conversation participants (file_id is shared via encrypted chat)
 	if fileRec.UploaderID != userID {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
+		convs, err := h.queries.GetConversations(userID)
+		authorized := false
+		if err == nil {
+			for _, c := range convs {
+				if c.UserID == fileRec.UploaderID {
+					authorized = true
+					break
+				}
+			}
+		}
+		if !authorized {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
 	}
 
 	data, err := h.store.ReadBlob(fileID)
