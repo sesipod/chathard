@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -26,6 +27,20 @@ func parseDuration(s string) (time.Duration, error) {
 		return d * 24, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// formatDuration converts a Go duration to a shorthand string the frontend
+// understands (e.g. "1h", "24h", "7d", "30d", "90d"). Rounds days down.
+func formatDuration(d time.Duration) string {
+	hours := int(d.Hours())
+	if hours < 1 {
+		return "<1h"
+	}
+	if hours < 24 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	days := hours / 24
+	return fmt.Sprintf("%dd", days)
 }
 
 // MessagesHandler handles message CRUD endpoints.
@@ -284,12 +299,21 @@ func (h *MessagesHandler) getConversations(w http.ResponseWriter, r *http.Reques
 	result := make([]map[string]interface{}, 0, len(convs)+len(groups))
 
 	for _, c := range convs {
+		// Derive expires_in from the latest message's expires_at
+		expiresIn := "Never"
+		if c.ExpiresAt != nil && *c.ExpiresAt != "" {
+			t, err := time.Parse(time.RFC3339, *c.ExpiresAt)
+			if err == nil && t.After(time.Now()) {
+				expiresIn = formatDuration(time.Until(t))
+			}
+		}
 		result = append(result, map[string]interface{}{
 			"user_id":         c.UserID,
 			"handle":          c.Handle,
 			"last_message_at": c.LastMessage,
 			"unread_count":    c.UnreadCount,
 			"last_active":     c.LastActivity,
+			"expires_in":      expiresIn,
 			"type":            "direct",
 		})
 	}

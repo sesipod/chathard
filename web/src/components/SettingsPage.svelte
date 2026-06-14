@@ -34,12 +34,13 @@
   function trunc(s, n) { return s?.length > n ? s.slice(0, n) + '…' : s || ''; }
   function setTheme(m) { settings.setTheme(m.toLowerCase()); }
   function setDefRet(e) { settings.setDefaultRetention(e.target.value); }
-  function editRet(c) { editingRetentionConv = c; editingRetentionValue = 'Never'; editingRetentionConv = editingRetentionConv; }
+  function editRet(c) { editingRetentionConv = c; editingRetentionValue = c.expires_in || 'Never'; editingRetentionConv = editingRetentionConv; }
   async function saveRet() {
     if (!editingRetentionConv) return;
     try { await api.updateRetention({ conversationWith: editingRetentionConv.user_id || editingRetentionConv.id, expiresIn: editingRetentionValue === 'Never' ? '' : editingRetentionValue }); } catch {}
     editingRetentionConv = null;
     editingRetentionConv = editingRetentionConv; // trigger reactivity
+    dispatch('retention-changed');
   }
   function cancelRet() { editingRetentionConv = null; editingRetentionConv = editingRetentionConv; }
   async function doLogout() { await auth.logout(); }

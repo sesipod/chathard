@@ -276,11 +276,12 @@ func (q *Queries) UpdateRetention(msgIDs []string, expiresAt *time.Time) error {
 }
 
 type ConversationRow struct {
-	UserID       string `json:"user_id"`
-	Handle       string `json:"handle"`
-	LastMessage  string `json:"last_message_at"`
-	UnreadCount  int    `json:"unread_count"`
-	LastActivity string `json:"last_active"`
+	UserID       string  `json:"user_id"`
+	Handle       string  `json:"handle"`
+	LastMessage  string  `json:"last_message_at"`
+	UnreadCount  int     `json:"unread_count"`
+	LastActivity string  `json:"last_active"`
+	ExpiresAt    *string `json:"expires_at"`
 }
 
 func (q *Queries) GetConversations(userID string) ([]ConversationRow, error) {
@@ -290,7 +291,8 @@ func (q *Queries) GetConversations(userID string) ([]ConversationRow, error) {
 			u.handle,
 			COALESCE(SUBSTR(HEX(m.ciphertext), 1, 32), '') AS last_msg,
 			COALESCE((SELECT COUNT(*) FROM messages WHERE recipient_id = ? AND sender_id = u.id AND read_at IS NULL), 0) AS unread,
-			COALESCE(MAX(m.created_at), '') AS last_active
+			COALESCE(MAX(m.created_at), '') AS last_active,
+			MAX(m.expires_at) AS expires_at
 		FROM users u
 		INNER JOIN messages m ON (m.sender_id = u.id AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = u.id)
 		WHERE u.id != ?
@@ -306,7 +308,7 @@ func (q *Queries) GetConversations(userID string) ([]ConversationRow, error) {
 	convs := make([]ConversationRow, 0)
 	for rows.Next() {
 		var c ConversationRow
-		if err := rows.Scan(&c.UserID, &c.Handle, &c.LastMessage, &c.UnreadCount, &c.LastActivity); err != nil {
+		if err := rows.Scan(&c.UserID, &c.Handle, &c.LastMessage, &c.UnreadCount, &c.LastActivity, &c.ExpiresAt); err != nil {
 			return nil, err
 		}
 		convs = append(convs, c)

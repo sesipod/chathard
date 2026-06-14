@@ -359,6 +359,10 @@
     showSettings = false;
   }
 
+  async function handleRetentionChanged() {
+    await chatStore.loadConversations();
+  }
+
   // ── Retention ──
   async function handleRetention(e) {
     const { conversationId, expiresIn } = e.detail;
@@ -454,6 +458,7 @@
   <SettingsPage
     show={showSettings}
     on:close={handleCloseSettings}
+    on:retention-changed={handleRetentionChanged}
     conversations={$conversations}
   />
 
