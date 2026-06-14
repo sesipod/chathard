@@ -15,6 +15,7 @@
   import NewChatModal from '../components/NewChatModal.svelte';
   import NewGroupModal from '../components/NewGroupModal.svelte';
   import SettingsPage from '../components/SettingsPage.svelte';
+  import FilesModal from '../components/FilesModal.svelte';
 
   // ── Auth guard ──
   let authenticated = false;
@@ -24,6 +25,9 @@
   let showNewChat = false;
   let showNewGroup = false;
   let showSettings = false;
+  let showFilesModal = false;
+  let filesModalConvId = '';
+  let filesModalIsGroup = false;
 
   // ── WebSocket ──
   let ws = null;
@@ -408,7 +412,15 @@
   }
 
   function handleOpenFiles(e) {
-    // Placeholder — file browsing will be implemented in a future iteration
+    const conv = $activeConversation;
+    if (!conv) return;
+    filesModalConvId = conv.user_id || conv.id;
+    filesModalIsGroup = conv.type === 'group';
+    showFilesModal = true;
+  }
+
+  function handleCloseFilesModal() {
+    showFilesModal = false;
   }
 
   function handleDeleteMessage(e) {
@@ -499,6 +511,13 @@
     on:close={handleCloseSettings}
     on:retention-changed={handleRetentionChanged}
     conversations={$conversations}
+  />
+
+  <FilesModal
+    show={showFilesModal}
+    convId={filesModalConvId}
+    isGroup={filesModalIsGroup}
+    on:close={handleCloseFilesModal}
   />
 
   <!-- Toast notifications -->
