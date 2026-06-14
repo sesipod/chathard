@@ -2,7 +2,7 @@
   import { createEventDispatcher, onMount } from 'svelte';
   import Avatar from './common/Avatar.svelte';
   import { auth } from '../lib/stores/auth.js';
-  import { settings, theme, defaultRetention } from '../lib/stores/settings.js';
+  import { settings, theme, defaultRetention, autoShowImages } from '../lib/stores/settings.js';
   import api from '../lib/api.js';
 
   export let show = false;
@@ -78,12 +78,21 @@
   <div class="seg" role="radiogroup">{#each themeOptions as opt}<button class="seg-btn" class:active={$theme === opt.toLowerCase()} on:click={() => setTheme(opt)}>{opt}</button>{/each}</div>
 </div></div></section>
 
-<section class="sec"><h3 class="st">Conversation Defaults</h3><div class="card"><div class="row">
-  <span>Default auto-delete</span>
-  <select class="sel" value={$defaultRetention} on:change={setDefRet}>{#each retentionOptions as opt}<option value={opt}>{opt}</option>{/each}</select>
-</div></div></section>
+<section class="sec"><h3 class="st">Conversation Defaults</h3><div class="card">
+  <div class="row">
+    <span>Default auto-delete</span>
+    <select class="sel" value={$defaultRetention} on:change={setDefRet}>{#each retentionOptions as opt}<option value={opt}>{opt}</option>{/each}</select>
+  </div>
+  <div class="row">
+    <span>Auto-show images in chat</span>
+    <label class="toggle">
+      <input type="checkbox" checked={$autoShowImages} on:change={(e) => autoShowImages.set(e.target.checked)} />
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+</div></section>
 
-<section class="sec"><h3 class="st">Per-Conversation Retention</h3><div class="card">
+<section class="sec"><h3 class="st">Per-Conversation Settings</h3><div class="card">
 {#if conversations.length === 0}<p class="muted">No conversations yet.</p>
 {:else}{#each conversations as conv (conv.user_id || conv.id)}
 <div class="ret-row" class:editing={isEditing(conv)}>
@@ -170,4 +179,10 @@
 .dlg p{font-size:.875rem;color:var(--color-text-muted);line-height:1.5;margin-bottom:1.25rem}
 .dlg-actions{display:flex;justify-content:flex-end;gap:.5rem}
 @media(max-width:767px){.page{max-width:100%}.scroll{padding:.75rem}}
+.toggle{position:relative;display:inline-block;width:44px;height:24px}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;cursor:pointer;inset:0;background:var(--color-bg-tertiary);border-radius:24px;transition:.2s;border:1px solid var(--color-border)}
+.toggle-slider:before{content:'';position:absolute;height:18px;width:18px;left:2px;bottom:2px;background:var(--color-text-muted);border-radius:50%;transition:.2s}
+.toggle input:checked+.toggle-slider{background:var(--color-accent);border-color:var(--color-accent)}
+.toggle input:checked+.toggle-slider:before{transform:translateX(20px);background:#fff}
 </style>
