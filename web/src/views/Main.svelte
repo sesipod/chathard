@@ -267,20 +267,44 @@
   async function handleAttachFile(e) {
     try {
       const result = await api.uploadFile(e.detail);
-      // Send a file-reference message after successful upload
       if (result && result.file_id) {
         const conv = $activeConversation;
         const convId = conv.user_id || conv.id;
         const userId = currentUser?.uuid || sessionStorage.getItem('tailchat-user-id');
         const fileName = e.detail.name || 'file';
         const text = `📎 ${fileName} (${result.file_id})`;
-        await api.sendMessage({
+
+        // Optimistic insert so sender sees the file message immediately
+        const optimisticId = 'opt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+        chatStore.addMessage(convId, {
+          id: optimisticId,
+          content: text,
+          created_at: new Date().toISOString(),
+          status: 'sent',
+          is_own: true,
+          sender_id: userId,
+        });
+
+        const msgResult = await api.sendMessage({
           recipientId: conv.type === 'group' ? null : convId,
           groupId: conv.type === 'group' ? convId : null,
           ciphertext: new TextEncoder().encode(text),
           ephemeralPub: new Uint8Array(32),
           nonce: new Uint8Array(12),
         });
+
+        // Replace optimistic with server result
+        if (msgResult && msgResult.id) {
+          chatStore.messages.update((m) => ({
+            ...m,
+            [convId]: (m[convId] || []).map((msg) =>
+              msg.id === optimisticId
+                ? { ...msgResult, is_own: true, content: text }
+                : msg,
+            ),
+          }));
+        }
+        chatStore.loadConversations();
         showToast('File sent');
       } else {
         showToast('File uploaded');
