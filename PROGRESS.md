@@ -2,30 +2,19 @@
 
 ## Completed
 
-- [x] Task-001: Add `GetUserGroupMessageIDs` query
-- [x] Task-002: Wire `updateRetention` to set `expires_at` on existing messages
+- [x] Task-001: Add `GetUserGroupMessageIDs` query (commit: ea025fc)
+- [x] Task-002: Wire `updateRetention` to set `expires_at` on existing messages (commit: 9e34e41)
+- [x] Task-003: Refresh conversations store after retention change from header (commit: 38fcedc)
 
-## Completed
+## Final Checks
 
-- [x] Task-001: Add `GetUserGroupMessageIDs` query
-- [x] Task-002: Wire `updateRetention` to set `expires_at` on existing messages
-- [x] Task-003: Refresh conversations store after retention change from header
+- **Server build**: ✅ `go build ./...` passes
+- **Client build**: ⚠️ needs `cd web && npm run build` (not run here)
 
-## Current Iteration
+## Blockers
 
-- Iteration: 4
-- Working on: (pending)
-- Started: 2026-06-14
-
-## Last Completed
-
-- Task-003: Refresh conversations store after retention change from header
-- Duration: ~2 minutes
-- Build: ⚠️ npm not available in environment; change is minimal (1 line)
-- Key decisions:
-  - Added `await chatStore.loadConversations()` after `api.updateRetention()` succeeds and before the success toast
-  - Follows same pattern already used in `handleLeaveGroup` and `handleRetentionChanged`
-  - No risk of race conditions — call is inside try block, any error will hit catch handler
-  - Works for both 1:1 and group conversations since `loadConversations()` refreshes all
+- **Server restart required**: After deploying, run `sudo systemctl restart tailchat` on the server for the Go changes to take effect
 
 ## Notes
+
+All PRD tasks complete. No more tasks remaining.
