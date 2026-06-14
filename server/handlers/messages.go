@@ -196,14 +196,33 @@ func (h *MessagesHandler) markRead(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateRetentionReq struct {
-	MessageIDs []string `json:"message_ids"`
-	ExpiresIn  string   `json:"expires_in"` // "" to clear
+	ConversationWith string `json:"conversation_with"`
+	GroupID          string `json:"group_id"`
+	ExpiresIn        string `json:"expires_in"` // "" to clear
 }
 
 func (h *MessagesHandler) updateRetention(w http.ResponseWriter, r *http.Request) {
 	var req updateRetentionReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	userID := r.Context().Value(CtxKeyUserID).(string)
+
+	var msgIDs []string
+	var err error
+
+	if req.ConversationWith != "" {
+		msgIDs, err = h.queries.GetConversationMessageIDs(userID, req.ConversationWith)
+	} else if req.GroupID != "" {
+		msgIDs, err = h.queries.GetGroupMessageIDs(req.GroupID)
+	} else {
+		http.Error(w, "conversation_with or group_id required", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Failed to lookup messages", http.StatusInternalServerError)
 		return
 	}
 
@@ -218,7 +237,7 @@ func (h *MessagesHandler) updateRetention(w http.ResponseWriter, r *http.Request
 		expiresAt = &t
 	}
 
-	if err := h.queries.UpdateRetention(req.MessageIDs, expiresAt); err != nil {
+	if err := h.queries.UpdateRetention(msgIDs, expiresAt); err != nil {
 		http.Error(w, "Failed to update retention", http.StatusInternalServerError)
 		return
 	}

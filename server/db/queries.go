@@ -210,6 +210,45 @@ func (q *Queries) MarkConversationRead(userID, conversationWith string, upToMsgI
 	return err
 }
 
+// GetConversationMessageIDs returns all message IDs in a 1:1 conversation.
+func (q *Queries) GetConversationMessageIDs(userID, otherUserID string) ([]string, error) {
+	rows, err := q.db.Query(
+		`SELECT id FROM messages WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))`,
+		userID, otherUserID, otherUserID, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// GetGroupMessageIDs returns all message IDs in a group.
+func (q *Queries) GetGroupMessageIDs(groupID string) ([]string, error) {
+	rows, err := q.db.Query(`SELECT id FROM messages WHERE group_id = ?`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (q *Queries) UpdateRetention(msgIDs []string, expiresAt *time.Time) error {
 	tx, err := q.db.Begin()
 	if err != nil {
