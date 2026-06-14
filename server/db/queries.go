@@ -229,11 +229,11 @@ func (q *Queries) UpdateRetention(msgIDs []string, expiresAt *time.Time) error {
 }
 
 type ConversationRow struct {
-	UserID       string
-	Handle       string
-	LastMessage  string
-	UnreadCount  int
-	LastActivity string
+	UserID       string `json:"user_id"`
+	Handle       string `json:"handle"`
+	LastMessage  string `json:"last_message_at"`
+	UnreadCount  int    `json:"unread_count"`
+	LastActivity string `json:"last_active"`
 }
 
 func (q *Queries) GetConversations(userID string) ([]ConversationRow, error) {
@@ -449,12 +449,12 @@ func (q *Queries) RemoveFileRecord(path string) error {
 // ─── Row types ────────────────────────────────────────────────────────────────
 
 type UserRow struct {
-	ID                   string
-	Handle               string
-	PublicKeyEd25519     []byte
-	PublicKeyX25519      []byte
-	DerivedPublicKeyEd25519 []byte
-	CreatedAt            string
+	ID                     string `json:"id"`
+	Handle                 string `json:"handle"`
+	PublicKeyEd25519       []byte `json:"public_key_ed25519"`
+	PublicKeyX25519        []byte `json:"public_key_x25519"`
+	DerivedPublicKeyEd25519 []byte `json:"derived_public_key_ed25519"`
+	CreatedAt              string `json:"created_at"`
 }
 
 type SessionRow struct {
