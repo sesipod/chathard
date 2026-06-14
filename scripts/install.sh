@@ -190,6 +190,7 @@ echo "=== Building backend ==="
 if [[ -f /opt/tailchat/server/go.mod ]]; then
   cd /opt/tailchat/server
   export PATH="$PATH:/usr/local/go/bin"
+  export GOCACHE=/tmp/go-cache GOMODCACHE=/tmp/go-modcache GOPATH=/tmp/go-home
   go build -buildvcs=false -o /tmp/tailchat-server .
   mv /tmp/tailchat-server /opt/tailchat/tailchat-server
   chown tailchat:tailchat /opt/tailchat/tailchat-server
