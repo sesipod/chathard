@@ -23,7 +23,7 @@ func NewMessagesHandler(queries *db.Queries) *MessagesHandler {
 // ServeHTTP routes message sub-paths.
 func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/api/messages":
+	case "/api/messages", "/messages":
 		switch r.Method {
 		case http.MethodPost:
 			h.sendMessage(w, r)
@@ -32,20 +32,20 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	case "/api/messages/read":
+	case "/api/messages/read", "/messages/read":
 		if r.Method == http.MethodPost {
 			h.markRead(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	case "/api/messages/retention":
+	case "/api/messages/retention", "/messages/retention":
 		if r.Method == http.MethodPatch {
 			h.updateRetention(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	// GET /api/conversations
-	case "/api/conversations":
+	case "/api/conversations", "/conversations":
 		if r.Method == http.MethodGet {
 			h.getConversations(w, r)
 		} else {
