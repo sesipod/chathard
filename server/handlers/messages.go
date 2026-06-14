@@ -212,7 +212,7 @@ func (h *MessagesHandler) getMessages(w http.ResponseWriter, r *http.Request) {
 	messages := make([]db.MessageRow, 0)
 	var err error
 	if groupID != "" {
-		messages, err = h.queries.GetGroupMessagesWithRetention(groupID, after, before, limit, retentionMod)
+		messages, err = h.queries.GetGroupMessagesWithRetention(userID, groupID, after, before, limit, retentionMod)
 	} else if withID != "" {
 		messages, err = h.queries.GetDirectMessagesWithRetention(userID, withID, after, before, limit, retentionMod)
 	} else {

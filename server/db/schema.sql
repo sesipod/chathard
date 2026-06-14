@@ -82,3 +82,11 @@ CREATE TABLE IF NOT EXISTS user_retention (
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (user_id, target_id, target_type)
 );
+
+-- Per-user message hiding: messages stay in DB, hidden per-user via this table.
+CREATE TABLE IF NOT EXISTS message_deletions (
+    user_id    TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, message_id)
+);

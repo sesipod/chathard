@@ -193,7 +193,7 @@ func (h *GroupsHandler) getGroupMessages(w http.ResponseWriter, r *http.Request,
 		retentionMod = retentionSQLModifier(ret)
 	}
 
-	messages, err := h.queries.GetGroupMessagesWithRetention(groupID, after, before, limit, retentionMod)
+	messages, err := h.queries.GetGroupMessagesWithRetention(userID, groupID, after, before, limit, retentionMod)
 	if err != nil {
 		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
 		return

@@ -2,19 +2,31 @@
 
 ## Completed
 
-- [x] Task-001: Add `GetUserGroupMessageIDs` query (commit: ea025fc)
-- [x] Task-002: Wire `updateRetention` to set `expires_at` on existing messages (commit: 9e34e41)
-- [x] Task-003: Refresh conversations store after retention change from header (commit: 38fcedc)
+(none yet)
 
-## Final Checks
+## Current Iteration
 
-- **Server build**: ✅ `go build ./...` passes
-- **Client build**: ⚠️ needs `cd web && npm run build` (not run here)
+- Iteration: 1
+- Working on: Task-001: Create `message_deletions` table + queries
+- Started: 2026-06-14
+
+## Last Completed
+
+- Task-001: Create `message_deletions` table + queries
+- Duration: ~5 minutes
+- Build: ✅ All passing
+- Key decisions:
+  - `HideMessages` uses transaction + prepared statement for batch inserts
+  - `GetHiddenMessageIDs` returns empty slice (not nil) to match existing patterns
+  - `GetGroupMessagesWithRetention` signature changed: added `userID` as first param
+  - Updated call sites in `messages.go` and `groups.go` handlers
 
 ## Blockers
 
-- **Server restart required**: After deploying, run `sudo systemctl restart tailchat` on the server for the Go changes to take effect
+- None
 
-## Notes
+## Notes for Next Iteration
 
-All PRD tasks complete. No more tasks remaining.
+- Task-002 depends on Task-001 — handlers for hide/batch-hide endpoints
+- `GetGroupMessagesWithRetention` now takes `userID` param — keep in mind for future callers
+- New query functions available: `HideMessage`, `HideMessages`, `GetHiddenMessageIDs`

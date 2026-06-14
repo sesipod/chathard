@@ -352,10 +352,11 @@ func (q *Queries) GetConversations(userID string) ([]ConversationRow, error) {
 		FROM users u
 		INNER JOIN messages m ON (m.sender_id = u.id AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = u.id)
 		WHERE u.id != ?
+		AND m.id NOT IN (SELECT message_id FROM message_deletions WHERE user_id = ?)
 		GROUP BY u.id
 		ORDER BY last_active DESC
 	`
-	rows, err := q.db.Query(query, userID, userID, userID, userID, userID)
+	rows, err := q.db.Query(query, userID, userID, userID, userID, userID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -621,6 +622,9 @@ func (q *Queries) GetDirectMessagesWithRetention(userID, otherUserID string, aft
 		query += ` AND created_at >= datetime('now', ?) `
 		args = append(args, retentionMod)
 	}
+
+	query += ` AND id NOT IN (SELECT message_id FROM message_deletions WHERE user_id = ?) `
+	args = append(args, userID)
 	if after != nil {
 		query += ` AND created_at > ? `
 		args = append(args, after.UTC().Format(time.RFC3339))
@@ -652,7 +656,7 @@ func (q *Queries) GetDirectMessagesWithRetention(userID, otherUserID string, aft
 
 // GetGroupMessagesWithRetention fetches messages in a group,
 // filtering out messages that have expired per the user's retention setting.
-func (q *Queries) GetGroupMessagesWithRetention(groupID string, after, before *time.Time, limit int, retentionMod string) ([]MessageRow, error) {
+func (q *Queries) GetGroupMessagesWithRetention(userID, groupID string, after, before *time.Time, limit int, retentionMod string) ([]MessageRow, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -665,6 +669,9 @@ func (q *Queries) GetGroupMessagesWithRetention(groupID string, after, before *t
 		query += ` AND created_at >= datetime('now', ?) `
 		args = append(args, retentionMod)
 	}
+
+	query += ` AND id NOT IN (SELECT message_id FROM message_deletions WHERE user_id = ?) `
+	args = append(args, userID)
 	if after != nil {
 		query += ` AND created_at > ? `
 		args = append(args, after.UTC().Format(time.RFC3339))
@@ -692,6 +699,65 @@ func (q *Queries) GetGroupMessagesWithRetention(groupID string, after, before *t
 		msgs = append(msgs, *m)
 	}
 	return msgs, rows.Err()
+}
+
+// ─── Message Deletions (Per-User Hiding) ──────────────────────────────────────
+
+// HideMessage records that a user wants to hide a specific message.
+// The message stays in the DB — other users are unaffected.
+func (q *Queries) HideMessage(userID, messageID string) error {
+	_, err := q.db.Exec(
+		`INSERT INTO message_deletions (user_id, message_id) VALUES (?, ?)`,
+		userID, messageID,
+	)
+	return err
+}
+
+// HideMessages batch-hides multiple messages for a user within a transaction.
+func (q *Queries) HideMessages(userID string, messageIDs []string) error {
+	if len(messageIDs) == 0 {
+		return nil
+	}
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT INTO message_deletions (user_id, message_id) VALUES (?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, msgID := range messageIDs {
+		if _, err := stmt.Exec(userID, msgID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// GetHiddenMessageIDs returns all message IDs that a user has chosen to hide.
+func (q *Queries) GetHiddenMessageIDs(userID string) ([]string, error) {
+	rows, err := q.db.Query(
+		`SELECT message_id FROM message_deletions WHERE user_id = ?`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────

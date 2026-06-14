@@ -1,33 +1,26 @@
-# PRD: Fix Auto-Delete Retention System
+# PRD: Files Modal, Message Deletion & Multi-Select
 
-## Goal
-
-Fix the per-user conversation auto-delete retention system so messages are actually deleted after the configured period, and UI state is consistent between the conversation header and Settings page.
-
-## Background
-
-The retention system has two mechanisms:
-1. **On-read filtering** — hides old messages from GET responses via `created_at >= datetime('now', ?)` in `GetDirectMessagesWithRetention` / `GetGroupMessagesWithRetention`
-2. **Per-message `expires_at` deletion** — cleanup goroutine (`DeleteExpiredMessages()`) deletes messages where `expires_at IS NOT NULL AND expires_at < now()`
-
-**Bug**: The `updateRetention` handler only calls `SetUserRetention()` (stores in `user_retention` table) but NEVER calls `UpdateRetention()` to set `expires_at` on existing messages. Since the cleanup goroutine only deletes messages with `expires_at` set, nothing ever gets cleaned up.
-
-Additionally, the client-side `handleRetention` function doesn't reload conversations after updating, so UI state stays stale.
-
-## Scope
-
-- Server-side Go code in `server/handlers/messages.go` and `server/db/queries.go`
-- Client-side Svelte code in `web/src/views/Main.svelte`
-- Optional: add `m` (minutes) support to `parseDuration` for easier testing
+See `PRDS/PRD-FILES-MESSAGE-DELETE.md` for full PRD with acceptance criteria.
 
 ## Tasks
 
-### Task-001: Add `GetUserGroupMessageIDs` query
+### Task-001: Create `message_deletions` table + queries
+Migration, schema, query functions, update message fetches to filter hidden messages.
 
-**Priority**: High
-**Depends on**: Nothing
+### Task-002: Add `POST /api/messages/hide` + `POST /api/messages/batch-hide`
+Server handlers for single and batch per-user message hiding.
 
-Add a new query `GetUserGroupMessageIDs(userID, groupID string) ([]string, error)` that returns only message IDs where `sender_id = userID AND group_id = groupID`. This is needed by Task-002 for group retention — the existing `GetGroupMessageIDs` returns ALL messages in a group.
+### Task-003: Add client-side single message delete to MessageBubble
+Delete button on all messages (sent AND received), confirmation dialog, hide API call, store removal.
+
+### Task-004: Add multi-select message deletion mode
+Select button in header, checkboxes, floating action bar, batch hide via API.
+
+### Task-005: Add `GET /api/conversations/:id/files` endpoint
+Scan messages for 📎 pattern, return file metadata.
+
+### Task-006: Files Modal in chat UI
+FilesModal.svelte component, wire up to conversation header Files button.
 
 **Acceptance Criteria**:
 - [ ] New function exists in `server/db/queries.go`
