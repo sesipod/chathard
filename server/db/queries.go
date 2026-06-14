@@ -294,8 +294,9 @@ func (q *Queries) UpdateRetention(msgIDs []string, expiresIn string) error {
 
 	// Set retention relative to each message's created_at so old messages
 	// are deleted retroactively (not just now + duration).
+	// Uses strftime to output RFC 3339 so it matches DeleteExpiredMessages.
 	mod := expiresInToSQL(expiresIn)
-	stmt, err := tx.Prepare(`UPDATE messages SET expires_at = datetime(created_at, ?) WHERE id = ?`)
+	stmt, err := tx.Prepare(`UPDATE messages SET expires_at = strftime('%Y-%m-%dT%H:%M:%SZ', created_at, ?) WHERE id = ?`)
 	if err != nil {
 		return err
 	}
