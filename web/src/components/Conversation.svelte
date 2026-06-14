@@ -294,11 +294,8 @@
       <div class="retention-confirm-dialog" on:click|stopPropagation>
         <h3 class="confirm-title">Confirm Auto-Delete</h3>
         <p class="confirm-body">
-          Your messages older than <strong>{pendingRetentionValue}</strong> in this conversation will be
+          Messages you have <strong>sent or received</strong> older than <strong>{pendingRetentionValue}</strong> in this conversation will be
           <strong>permanently deleted</strong> after the set time. This action <strong>cannot be undone</strong>.
-        </p>
-        <p class="confirm-note">
-          Only your sent messages are affected — the other person's messages will not be deleted.
         </p>
         <div class="confirm-actions">
           <button class="confirm-btn cancel" on:click={cancelRetention}>Cancel</button>

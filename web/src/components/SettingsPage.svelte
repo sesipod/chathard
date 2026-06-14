@@ -18,6 +18,8 @@
   let confirmExportKey = false;
   let editingRetentionConv = null;
   let editingRetentionValue = 'Never';
+  let showRetentionConfirm = false;
+  let pendingRetentionSave = null; // { conv, value } to confirm
 
   const themeOptions = ['Dark', 'Light', 'System'];
   const retentionOptions = ['Never', '1h', '24h', '7d', '30d', '90d'];
@@ -36,6 +38,29 @@
   function setDefRet(e) { settings.setDefaultRetention(e.target.value); }
   function editRet(c) { editingRetentionConv = c; editingRetentionValue = c.expires_in || 'Never'; editingRetentionConv = editingRetentionConv; }
   async function saveRet() {
+    if (!editingRetentionConv) return;
+    // If setting a non-"Never" value, show confirmation first
+    if (editingRetentionValue !== 'Never' && editingRetentionValue !== (editingRetentionConv.expires_in || 'Never')) {
+      pendingRetentionSave = { conv: editingRetentionConv, value: editingRetentionValue };
+      showRetentionConfirm = true;
+      return;
+    }
+    doSaveRetention();
+  }
+  function confirmRetention() {
+    showRetentionConfirm = false;
+    if (pendingRetentionSave) {
+      editingRetentionConv = pendingRetentionSave.conv;
+      editingRetentionValue = pendingRetentionSave.value;
+      pendingRetentionSave = null;
+      doSaveRetention();
+    }
+  }
+  function cancelRetentionConfirm() {
+    showRetentionConfirm = false;
+    pendingRetentionSave = null;
+  }
+  async function doSaveRetention() {
     if (!editingRetentionConv) return;
     const isGroup = editingRetentionConv.type === 'group';
     const convId = editingRetentionConv.user_id || editingRetentionConv.id;
@@ -138,6 +163,16 @@
 </div></section>
 {/if}
 </div></div></div>
+{/if}
+
+{#if showRetentionConfirm}
+<div class="dlg-bg" on:click={cancelRetentionConfirm}><div class="dlg" on:click|stopPropagation>
+  <h3>Confirm Auto-Delete</h3>
+  {#if pendingRetentionSave}
+  <p>Messages you have <strong>sent or received</strong> older than <strong>{pendingRetentionSave.value}</strong> in this conversation will be <strong>permanently deleted</strong> after the set time. This action <strong>cannot be undone</strong>.</p>
+  {/if}
+  <div class="dlg-actions"><button class="btn" on:click={cancelRetentionConfirm}>Cancel</button><button class="btn btn-danger" on:click={confirmRetention}>Confirm</button></div>
+</div></div>
 {/if}
 
 {#if confirmLogout}<div class="dlg-bg" on:click={() => { confirmLogout = false; }}><div class="dlg" on:click|stopPropagation>
