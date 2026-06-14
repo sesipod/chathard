@@ -116,23 +116,10 @@ func (h *MessagesHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-message TTL: only set expires_at if the client explicitly sent expires_in
 	var expiresAt *time.Time
-	expiresIn := req.ExpiresIn
-	if expiresIn == "" && req.RecipientID != "" {
-		// Auto-inherit retention from existing messages in the conversation
-		ret, err := h.queries.GetConversationRetention(userID, req.RecipientID)
-		if err == nil && ret != "" {
-			expiresIn = ret
-		}
-	}
-	if expiresIn == "" && req.GroupID != "" {
-		ret, err := h.queries.GetGroupRetention(req.GroupID)
-		if err == nil && ret != "" {
-			expiresIn = ret
-		}
-	}
-	if expiresIn != "" {
-		d, err := parseDuration(expiresIn)
+	if req.ExpiresIn != "" {
+		d, err := parseDuration(req.ExpiresIn)
 		if err != nil {
 			http.Error(w, "Invalid expires_in", http.StatusBadRequest)
 			return
@@ -140,6 +127,7 @@ func (h *MessagesHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		t := time.Now().Add(d)
 		expiresAt = &t
 	}
+	// Per-user retention is NOT applied here — it's filtered on read via user_retention table
 
 	id := uuid.New().String()
 	if err := h.queries.InsertMessage(id, userID, req.RecipientID, req.GroupID, req.Ciphertext, req.EphemeralPubKey, req.Nonce, expiresAt); err != nil {
@@ -190,12 +178,26 @@ func (h *MessagesHandler) getMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Apply per-user retention filter
+	var retentionMod string
+	if groupID != "" {
+		ret, err := h.queries.GetUserRetention(userID, groupID, "group")
+		if err == nil && ret != "" {
+			retentionMod = "-" + ret[:len(ret)-1] + " " + map[string]string{"h": "hours", "d": "days"}[ret[len(ret)-1:]]
+		}
+	} else if withID != "" {
+		ret, err := h.queries.GetUserRetention(userID, withID, "direct")
+		if err == nil && ret != "" {
+			retentionMod = "-" + ret[:len(ret)-1] + " " + map[string]string{"h": "hours", "d": "days"}[ret[len(ret)-1:]]
+		}
+	}
+
 	messages := make([]db.MessageRow, 0)
 	var err error
 	if groupID != "" {
-		messages, err = h.queries.GetGroupMessages(groupID, after, before, limit)
+		messages, err = h.queries.GetGroupMessagesWithRetention(groupID, after, before, limit, retentionMod)
 	} else if withID != "" {
-		messages, err = h.queries.GetDirectMessages(userID, withID, after, before, limit)
+		messages, err = h.queries.GetDirectMessagesWithRetention(userID, withID, after, before, limit, retentionMod)
 	} else {
 		http.Error(w, "Specify ?with= or ?group_id=", http.StatusBadRequest)
 		return
@@ -257,33 +259,28 @@ func (h *MessagesHandler) updateRetention(w http.ResponseWriter, r *http.Request
 
 	userID := r.Context().Value(CtxKeyUserID).(string)
 
-	var msgIDs []string
-	var err error
-
+	var targetID, targetType string
 	if req.ConversationWith != "" {
-		msgIDs, err = h.queries.GetConversationMessageIDs(userID, req.ConversationWith)
+		targetID = req.ConversationWith
+		targetType = "direct"
 	} else if req.GroupID != "" {
-		msgIDs, err = h.queries.GetGroupMessageIDs(req.GroupID)
+		targetID = req.GroupID
+		targetType = "group"
 	} else {
 		http.Error(w, "conversation_with or group_id required", http.StatusBadRequest)
 		return
 	}
-	if err != nil {
-		http.Error(w, "Failed to lookup messages", http.StatusInternalServerError)
-		return
-	}
 
-	var expiresIn string
+	// Validate format if not clearing
 	if req.ExpiresIn != "" {
-		// Validate the duration format
 		if _, err := parseDuration(req.ExpiresIn); err != nil {
 			http.Error(w, "Invalid expires_in", http.StatusBadRequest)
 			return
 		}
-		expiresIn = req.ExpiresIn
 	}
 
-	if err := h.queries.UpdateRetention(msgIDs, expiresIn); err != nil {
+	// Store per-user retention setting — does NOT modify or delete messages
+	if err := h.queries.SetUserRetention(userID, targetID, targetType, req.ExpiresIn); err != nil {
 		http.Error(w, "Failed to update retention", http.StatusInternalServerError)
 		return
 	}
@@ -312,13 +309,11 @@ func (h *MessagesHandler) getConversations(w http.ResponseWriter, r *http.Reques
 	result := make([]map[string]interface{}, 0, len(convs)+len(groups))
 
 	for _, c := range convs {
-		// Derive expires_in from the latest message's expires_at
+		// Get the user's OWN retention setting for this conversation
 		expiresIn := "Never"
-		if c.ExpiresAt != nil && *c.ExpiresAt != "" {
-			t, err := time.Parse(time.RFC3339, *c.ExpiresAt)
-			if err == nil && t.After(time.Now()) {
-				expiresIn = formatDuration(time.Until(t))
-			}
+		ret, err := h.queries.GetUserRetention(userID, c.UserID, "direct")
+		if err == nil && ret != "" {
+			expiresIn = ret
 		}
 		result = append(result, map[string]interface{}{
 			"user_id":         c.UserID,
@@ -332,12 +327,19 @@ func (h *MessagesHandler) getConversations(w http.ResponseWriter, r *http.Reques
 	}
 
 	for _, g := range groups {
+		// Get the user's OWN retention setting for this group
+		expiresIn := "Never"
+		ret, err := h.queries.GetUserRetention(userID, g.ID, "group")
+		if err == nil && ret != "" {
+			expiresIn = ret
+		}
 		result = append(result, map[string]interface{}{
 			"id":              g.ID,
 			"name":            g.EncryptedName,
 			"last_message_at": g.LastActive,
 			"unread_count":    0,
 			"last_active":     g.LastActive,
+			"expires_in":      expiresIn,
 			"type":            "group",
 		})
 	}

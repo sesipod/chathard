@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"fmt"
 	"time"
 )
 
@@ -211,12 +210,12 @@ func (q *Queries) MarkConversationRead(userID, conversationWith string, upToMsgI
 	return err
 }
 
-// GetConversationMessageIDs returns message IDs in a 1:1 conversation
-// including messages from BOTH participants (conversation-level retention).
+// GetConversationMessageIDs returns message IDs sent BY the user in a 1:1 conversation.
+// Used for per-user message retention — only the sender's own messages are affected.
 func (q *Queries) GetConversationMessageIDs(userID, otherUserID string) ([]string, error) {
 	rows, err := q.db.Query(
-		`SELECT id FROM messages WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))`,
-		userID, otherUserID, otherUserID, userID,
+		`SELECT id FROM messages WHERE sender_id = ? AND recipient_id = ?`,
+		userID, otherUserID,
 	)
 	if err != nil {
 		return nil, err
@@ -249,36 +248,6 @@ func (q *Queries) GetGroupMessageIDs(groupID string) ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
-}
-
-// GetGroupRetention returns the retention duration string for a group conversation.
-func (q *Queries) GetGroupRetention(groupID string) (string, error) {
-	var expiresAt, createdAt string
-	err := q.db.QueryRow(`
-		SELECT expires_at, created_at FROM messages
-		WHERE group_id = ? AND expires_at IS NOT NULL
-		ORDER BY created_at DESC LIMIT 1
-	`, groupID).Scan(&expiresAt, &createdAt)
-	if err != nil {
-		return "", err
-	}
-	expTime, err1 := time.Parse(time.RFC3339, expiresAt)
-	createdTime, err2 := time.Parse(time.RFC3339, createdAt)
-	if err1 != nil || err2 != nil {
-		return "", nil
-	}
-	diff := expTime.Sub(createdTime)
-	if diff <= 0 {
-		return "", nil
-	}
-	hours := int(diff.Hours())
-	if hours < 1 {
-		return "<1h", nil
-	}
-	if hours < 24 {
-		return fmt.Sprintf("%dh", hours), nil
-	}
-	return fmt.Sprintf("%dd", hours/24), nil
 }
 
 // expiresInToSQL converts a shorthand duration to a SQLite datetime modifier.
@@ -566,42 +535,131 @@ func (q *Queries) GetRecoveryCodesRemaining(userID string) (int, error) {
 	return count, err
 }
 
-// GetConversationRetention returns the retention duration string (e.g. "1h", "7d")
-// for a 1:1 conversation, based on the most recent message that had expires_at set.
-// Returns empty string if no messages in the conversation have retention.
-func (q *Queries) GetConversationRetention(userID, otherUserID string) (string, error) {
-	var expiresAt, createdAt string
-	err := q.db.QueryRow(`
-		SELECT expires_at, created_at FROM messages
-		WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))
-		AND expires_at IS NOT NULL
-		ORDER BY created_at DESC LIMIT 1
-	`, userID, otherUserID, otherUserID, userID).Scan(&expiresAt, &createdAt)
+// ─── Per-User Retention ───────────────────────────────────────────────────────
+
+// SetUserRetention stores a user's retention preference for a conversation.
+// expiresIn: "1h", "7d", etc. Empty string clears the retention.
+func (q *Queries) SetUserRetention(userID, targetID, targetType, expiresIn string) error {
+	_, err := q.db.Exec(`
+		INSERT INTO user_retention (user_id, target_id, target_type, expires_in)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(user_id, target_id, target_type)
+		DO UPDATE SET expires_in = excluded.expires_in, updated_at = datetime('now')
+	`, userID, targetID, targetType, expiresIn)
+	return err
+}
+
+// GetUserRetention returns the user's retention setting for a conversation.
+// Returns empty string if no retention is set.
+func (q *Queries) GetUserRetention(userID, targetID, targetType string) (string, error) {
+	var expiresIn string
+	err := q.db.QueryRow(
+		`SELECT expires_in FROM user_retention WHERE user_id = ? AND target_id = ? AND target_type = ?`,
+		userID, targetID, targetType,
+	).Scan(&expiresIn)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
-	expTime, err1 := time.Parse(time.RFC3339, expiresAt)
-	createdTime, err2 := time.Parse(time.RFC3339, createdAt)
-	if err1 != nil || err2 != nil {
-		return "", nil
+	return expiresIn, nil
+}
+
+// GetDirectMessagesWithRetention fetches messages in a 1:1 conversation,
+// filtering out messages that have expired per the user's retention setting.
+// retentionMod is a SQLite modifier like "-1 hours" or "" for no filter.
+func (q *Queries) GetDirectMessagesWithRetention(userID, otherUserID string, after, before *time.Time, limit int, retentionMod string) ([]MessageRow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
 	}
-	diff := expTime.Sub(createdTime)
-	if diff <= 0 {
-		return "", nil
+
+	query := `SELECT id, sender_id, recipient_id, group_id, ciphertext, ephemeral_public_key, nonce, created_at, expires_at, read_at FROM messages WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))`
+	var args []interface{}
+	args = append(args, userID, otherUserID, otherUserID, userID)
+
+	if retentionMod != "" {
+		query += ` AND created_at >= datetime('now', ?) `
+		args = append(args, retentionMod)
 	}
-	hours := int(diff.Hours())
-	if hours < 1 {
-		return "<1h", nil
+	if after != nil {
+		query += ` AND created_at > ? `
+		args = append(args, after.UTC().Format(time.RFC3339))
 	}
-	if hours < 24 {
-		return fmt.Sprintf("%dh", hours), nil
+	if before != nil {
+		query += ` AND created_at < ? `
+		args = append(args, before.UTC().Format(time.RFC3339))
 	}
-	return fmt.Sprintf("%dd", hours/24), nil
+
+	query += ` ORDER BY created_at DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := q.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []MessageRow
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, *m)
+	}
+	return msgs, rows.Err()
+}
+
+// GetGroupMessagesWithRetention fetches messages in a group,
+// filtering out messages that have expired per the user's retention setting.
+func (q *Queries) GetGroupMessagesWithRetention(groupID string, after, before *time.Time, limit int, retentionMod string) ([]MessageRow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	query := `SELECT id, sender_id, recipient_id, group_id, ciphertext, ephemeral_public_key, nonce, created_at, expires_at, read_at FROM messages WHERE group_id = ?`
+	var args []interface{}
+	args = append(args, groupID)
+
+	if retentionMod != "" {
+		query += ` AND created_at >= datetime('now', ?) `
+		args = append(args, retentionMod)
+	}
+	if after != nil {
+		query += ` AND created_at > ? `
+		args = append(args, after.UTC().Format(time.RFC3339))
+	}
+	if before != nil {
+		query += ` AND created_at < ? `
+		args = append(args, before.UTC().Format(time.RFC3339))
+	}
+
+	query += ` ORDER BY created_at DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := q.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []MessageRow
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, *m)
+	}
+	return msgs, rows.Err()
 }
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 // DeleteExpiredMessages removes messages past their expires_at.
+// This only affects messages with an explicit per-message TTL set via expires_in.
+// Per-user retention filtering is handled separately on read (see GetDirectMessagesWithRetention).
 // Uses RFC3339 comparison to match the format written by UpdateRetention.
 func (q *Queries) DeleteExpiredMessages() (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)

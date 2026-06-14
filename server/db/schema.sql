@@ -72,3 +72,13 @@ CREATE TABLE IF NOT EXISTS files (
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at          TEXT
 );
+
+-- Per-user retention: each user controls what THEY see, without affecting others.
+CREATE TABLE IF NOT EXISTS user_retention (
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_id   TEXT NOT NULL,
+    target_type TEXT NOT NULL CHECK (target_type IN ('direct', 'group')),
+    expires_in  TEXT,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, target_id, target_type)
+);
