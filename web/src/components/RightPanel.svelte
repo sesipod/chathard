@@ -17,6 +17,7 @@
    *   on:retention    — fired from Conversation with { detail: expiresIn }
    *   on:leaveGroup   — fired from Conversation
    *   on:openFiles    — fired from Conversation 3-dot menu
+   *   on:delete       — fired from Conversation with { messageId } when a message is hidden
    */
   import EmptyState from './EmptyState.svelte';
   import Conversation from './Conversation.svelte';
@@ -60,6 +61,10 @@
   function handleOpenFiles(e) {
     dispatch('openFiles', e.detail);
   }
+
+  function handleDelete(e) {
+    dispatch('delete', e.detail);
+  }
 </script>
 
 <div class="right-panel">
@@ -75,6 +80,7 @@
       on:retention={handleRetention}
       on:leaveGroup={handleLeaveGroup}
       on:openFiles={handleOpenFiles}
+      on:delete={handleDelete}
     />
   {:else}
     <EmptyState on:newChat={handleNewChat} />

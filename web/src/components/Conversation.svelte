@@ -15,6 +15,7 @@
    *   on:retention    — fired with { detail: expiresIn }
    *   on:leaveGroup   — fired when "Leave group" is selected
    *   on:openFiles    — fired when "Files" is selected in the menu
+   *   on:delete       — fired with { messageId } when a message is hidden
    */
   import { createEventDispatcher, afterUpdate } from 'svelte';
   import MessageBubble from './MessageBubble.svelte';
@@ -171,6 +172,10 @@
     pendingRetentionValue = '';
   }
 
+  function handleDelete(e) {
+    dispatch('delete', e.detail);
+  }
+
   function handleRetentionChange(e) {
     const value = e.target.value;
     if (value && value !== currentRetention) {
@@ -324,6 +329,7 @@
           convId={conversation.user_id || conversation.id || ''}
           showDateSeparator={row.showDateSeparator}
           dateText={row.dateText}
+          on:delete={handleDelete}
         />
       {/each}
     {/if}

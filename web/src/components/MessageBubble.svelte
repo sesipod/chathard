@@ -9,6 +9,9 @@
    *   senderHandle     {string}  Sender's handle (shown in groups for received msgs)
    *   showDateSeparator {boolean} Whether to render a date header before this bubble
    *   dateText          {string}  Text for the date header ("Today", "Yesterday", "Jun 9")
+   *
+   * Events:
+   *   on:delete  — fired with { messageId } when the user confirms deletion
    */
   export let message = {};
   export let isOwn = false;
@@ -17,7 +20,31 @@
   export let dateText = '';
   export let convId = '';
 
+  import { createEventDispatcher } from 'svelte';
   import { getAutoShowImages, imageSettingsVersion } from '../lib/stores/settings.js';
+
+  const dispatch = createEventDispatcher();
+
+  let showConfirm = false;
+
+  function handleDeleteClick() {
+    showConfirm = true;
+  }
+
+  function cancelDelete() {
+    showConfirm = false;
+  }
+
+  async function confirmDelete() {
+    showConfirm = false;
+    try {
+      const { default: api } = await import('../lib/api.js');
+      await api.hideMessage(message.id);
+      dispatch('delete', { messageId: message.id });
+    } catch (e) {
+      console.error('Failed to hide message:', e);
+    }
+  }
 
   /** Format a timestamp into a short time string like "10:42 AM". */
   function formatTime(iso) {
@@ -167,7 +194,34 @@
               {/if}
             </span>
           {/if}
+          <button
+            class="delete-btn"
+            on:click={handleDeleteClick}
+            title="Delete this message from your feed"
+            aria-label="Delete message"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="2,4 12,4" />
+              <path d="M4,4 V3a1,1 0 0,1 1-1 h4a1,1 0 0,1 1,1 v1" />
+              <path d="M5,4 v6" />
+              <path d="M7,4 v6" />
+              <path d="M9,4 v6" />
+              <path d="M3,4 h8 l-.5,7a1,1 0 0,1-1,1 h-5a1,1 0 0,1-1-1 L3,4" />
+            </svg>
+          </button>
         </div>
+
+        {#if showConfirm}
+          <div class="delete-confirm-overlay" on:click={cancelDelete}>
+            <div class="delete-confirm-dialog" on:click|stopPropagation>
+              <p class="delete-confirm-text">Delete this message from your feed? Other people will still see it.</p>
+              <div class="delete-confirm-actions">
+                <button class="delete-confirm-btn cancel" on:click={cancelDelete}>Cancel</button>
+                <button class="delete-confirm-btn confirm" on:click={confirmDelete}>Delete</button>
+              </div>
+            </div>
+          </div>
+        {/if}
       </div>
     </div>
   {/if}
@@ -198,6 +252,18 @@
   .bubble.sent .bubble-meta { justify-content:flex-end; }
   .bubble-time { font-size:.6875rem; opacity:.7; line-height:1; }
   .bubble.sent .bubble-time { color:rgba(255,255,255,.75); }
+  .delete-btn { display:none; align-items:center; justify-content:center; width:20px; height:20px; border:none; border-radius:4px; background:transparent; color:inherit; opacity:.5; cursor:pointer; padding:0; transition:opacity .12s,background .12s; flex-shrink:0; }
+  .message-wrapper:hover .delete-btn { display:flex; }
+  .delete-btn:hover { opacity:1; background:rgba(0,0,0,.1); }
+  .bubble.sent .delete-btn:hover { background:rgba(255,255,255,.15); }
+  .delete-confirm-overlay { position:absolute; inset:0; z-index:30; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.4); border-radius:12px; }
+  .delete-confirm-dialog { max-width:280px; width:100%; padding:1rem; border-radius:10px; background:var(--color-bg-secondary); border:1px solid var(--color-border); box-shadow:0 4px 20px rgba(0,0,0,.4); }
+  .delete-confirm-text { font-size:.8125rem; color:var(--color-text); line-height:1.4; margin:0 0 .75rem; text-align:center; }
+  .delete-confirm-actions { display:flex; gap:.5rem; justify-content:center; }
+  .delete-confirm-btn { padding:.375rem .875rem; border:none; border-radius:6px; font-size:.75rem; font-weight:600; font-family:inherit; cursor:pointer; transition:opacity .12s; }
+  .delete-confirm-btn:hover { opacity:.85; }
+  .delete-confirm-btn.cancel { background:var(--color-bg-tertiary); color:var(--color-text); }
+  .delete-confirm-btn.confirm { background:var(--color-danger,#e74c3c); color:#fff; }
   .bubble.received .bubble-time { color:var(--color-text-muted); }
   .status-icon { display:inline-flex; align-items:center; line-height:1; flex-shrink:0; }
   .bubble.sent .status-icon { color:rgba(255,255,255,.75); }

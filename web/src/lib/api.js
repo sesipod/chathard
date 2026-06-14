@@ -249,6 +249,16 @@ const api = {
     return res.json();
   },
 
+  // ── Messages: Hide (per-user delete) ──
+  async hideMessage(messageId) {
+    const res = await fetch('/api/messages/hide', {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ message_id: messageId }),
+    });
+    await throwIfNotOk(res);
+  },
+
   // ── Files ──
   async uploadFile(file, expiresIn) {
     const form = new FormData();

@@ -411,6 +411,16 @@
     // Placeholder — file browsing will be implemented in a future iteration
   }
 
+  function handleDeleteMessage(e) {
+    const { messageId } = e.detail;
+    const convId = $activeConversationId;
+    if (!convId || !messageId) return;
+    chatStore.messages.update((m) => {
+      const msgs = (m[convId] || []).filter((msg) => msg.id !== messageId);
+      return { ...m, [convId]: msgs };
+    });
+  }
+
   // ── Toast helper ──
   function showToast(message) {
     const id = ++toastCounter;
@@ -455,6 +465,7 @@
         on:retention={handleRetention}
         on:leaveGroup={handleLeaveGroup}
         on:openFiles={handleOpenFiles}
+        on:delete={handleDeleteMessage}
         on:newChat={() => (showNewChat = true)}
       />
     </div>
