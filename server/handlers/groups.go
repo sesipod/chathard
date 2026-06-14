@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stuckpacket/tailchat/db"
@@ -65,15 +66,15 @@ func (h *GroupsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type createGroupReq struct {
-	EncryptedName         []byte                    `json:"encrypted_name"`
-	EncryptedSymmetricKey []byte                    `json:"encrypted_symmetric_key"`
-	Members               []createGroupMemberReq    `json:"members"`
+	EncryptedName         []byte                 `json:"encrypted_name"`
+	EncryptedSymmetricKey []byte                 `json:"encrypted_symmetric_key"`
+	Members               []createGroupMemberReq `json:"members"`
 }
 
 type createGroupMemberReq struct {
-	UserID                string `json:"user_id"`
-	EncryptedGroupKey     []byte `json:"encrypted_group_key"`
-	EncryptedMetadata     []byte `json:"encrypted_member_metadata"`
+	UserID            string `json:"user_id"`
+	EncryptedGroupKey []byte `json:"encrypted_group_key"`
+	EncryptedMetadata []byte `json:"encrypted_member_metadata"`
 }
 
 func (h *GroupsHandler) createGroup(w http.ResponseWriter, r *http.Request) {
@@ -123,9 +124,9 @@ func (h *GroupsHandler) addMember(w http.ResponseWriter, r *http.Request, groupI
 	_ = userID
 
 	var req struct {
-		UserID              string `json:"user_id"`
-		EncryptedGroupKey   []byte `json:"encrypted_group_key"`
-		EncryptedMetadata   []byte `json:"encrypted_member_metadata"`
+		UserID            string `json:"user_id"`
+		EncryptedGroupKey []byte `json:"encrypted_group_key"`
+		EncryptedMetadata []byte `json:"encrypted_member_metadata"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -158,6 +159,8 @@ func (h *GroupsHandler) removeMember(w http.ResponseWriter, r *http.Request, gro
 }
 
 func (h *GroupsHandler) getGroupMessages(w http.ResponseWriter, r *http.Request, groupID string) {
+	userID := r.Context().Value(CtxKeyUserID).(string)
+
 	limit := 50
 	q := r.URL.Query()
 	if l := q.Get("limit"); l != "" {
@@ -169,7 +172,28 @@ func (h *GroupsHandler) getGroupMessages(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	messages, err := h.queries.GetGroupMessages(groupID, nil, nil, limit)
+	var after, before *time.Time
+	if a := q.Get("after"); a != "" {
+		t, err := time.Parse(time.RFC3339, a)
+		if err == nil {
+			after = &t
+		}
+	}
+	if b := q.Get("before"); b != "" {
+		t, err := time.Parse(time.RFC3339, b)
+		if err == nil {
+			before = &t
+		}
+	}
+
+	// Apply per-user retention filter
+	var retentionMod string
+	ret, err := h.queries.GetUserRetention(userID, groupID, "group")
+	if err == nil && ret != "" {
+		retentionMod = retentionSQLModifier(ret)
+	}
+
+	messages, err := h.queries.GetGroupMessagesWithRetention(groupID, after, before, limit, retentionMod)
 	if err != nil {
 		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
 		return
@@ -206,5 +230,3 @@ func parseInt(s string) (int, error) {
 	}
 	return n, nil
 }
-
-

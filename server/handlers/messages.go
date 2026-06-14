@@ -43,6 +43,19 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dd", days)
 }
 
+// retentionSQLModifier converts a retention string like "1h" to a SQLite
+// datetime modifier like "-1 hours" for filtering messages on read.
+func retentionSQLModifier(ret string) string {
+	if len(ret) < 2 {
+		return ""
+	}
+	suffix := map[byte]string{'h': "hours", 'd': "days"}[ret[len(ret)-1]]
+	if suffix == "" {
+		return ""
+	}
+	return "-" + ret[:len(ret)-1] + " " + suffix
+}
+
 // MessagesHandler handles message CRUD endpoints.
 type MessagesHandler struct {
 	queries *db.Queries
@@ -187,12 +200,12 @@ func (h *MessagesHandler) getMessages(w http.ResponseWriter, r *http.Request) {
 	if groupID != "" {
 		ret, err := h.queries.GetUserRetention(userID, groupID, "group")
 		if err == nil && ret != "" {
-			retentionMod = "-" + ret[:len(ret)-1] + " " + map[string]string{"h": "hours", "d": "days"}[ret[len(ret)-1:]]
+			retentionMod = retentionSQLModifier(ret)
 		}
 	} else if withID != "" {
 		ret, err := h.queries.GetUserRetention(userID, withID, "direct")
 		if err == nil && ret != "" {
-			retentionMod = "-" + ret[:len(ret)-1] + " " + map[string]string{"h": "hours", "d": "days"}[ret[len(ret)-1:]]
+			retentionMod = retentionSQLModifier(ret)
 		}
 	}
 
