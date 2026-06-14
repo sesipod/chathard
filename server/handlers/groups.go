@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -80,11 +81,12 @@ func (h *GroupsHandler) createGroup(w http.ResponseWriter, r *http.Request) {
 
 	var req createGroupReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("groups: create JSON decode error: %v", err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	if len(req.EncryptedName) == 0 || len(req.EncryptedSymmetricKey) == 0 {
+	if len(req.EncryptedName) == 0 {
 		http.Error(w, "Missing required fields", http.StatusBadRequest)
 		return
 	}

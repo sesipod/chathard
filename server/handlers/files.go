@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -112,12 +113,14 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 
 	// Store blob
 	if err := h.store.WriteBlob(fileID, encryptedData); err != nil {
+		log.Printf("upload: write blob %s: %v", fileID, err)
 		http.Error(w, "Failed to store file", http.StatusInternalServerError)
 		return
 	}
 
 	if err := h.queries.InsertFile(fileID, userID, fileID[:2]+"/"+fileID+".enc", encryptedMeta, int64(len(encryptedData)), nil); err != nil {
 		h.store.DeleteBlob(fileID)
+		log.Printf("upload: insert file record %s (meta=%d data=%d): %v", fileID, len(encryptedMeta), len(encryptedData), err)
 		http.Error(w, "Failed to create file record", http.StatusInternalServerError)
 		return
 	}
