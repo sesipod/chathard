@@ -12,7 +12,7 @@
 - [x] Phase 3e: Real-time WebSocket, mobile UX finalization (commit: 607f47b)
 - [x] Phase 4: Security hardening (commit: 920304d)
 - [x] Task-001: Mutual Permanent Deletion — 1:1 Conversations (commit: 5829a83)
-- [x] Task-002: Update Cleanup Goroutine — Hide Instead of Delete (commit: pending)
+- [x] Task-002: Update Cleanup Goroutine — Hide Instead of Delete (commit: 85a5869)
 
 ## Current Iteration
 

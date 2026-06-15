@@ -7,8 +7,8 @@ import (
 
 // Cleaner handles periodic cleanup of expired messages and blobs.
 type Cleaner struct {
-	store          *BlobStore
-	queries        interface {
+	store   *BlobStore
+	queries interface {
 		HideExpiredMessages() ([]string, error)
 		DeleteExpiredFiles() ([]string, error)
 		RemoveFileRecord(path string) error
