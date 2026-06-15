@@ -11,22 +11,22 @@
 - [x] Phase 3d: Settings page (commit: 7f5fade)
 - [x] Phase 3e: Real-time WebSocket, mobile UX finalization (commit: 607f47b)
 - [x] Phase 4: Security hardening (commit: 920304d)
+- [x] Task-001: Mutual Permanent Deletion — 1:1 Conversations (commit: 5829a83)
+- [x] Task-002: Update Cleanup Goroutine — Hide Instead of Delete (commit: pending)
 
 ## Current Iteration
 
-- Iteration: 14
-- Working on: Task-003/004: Fix group display in sidebar
-- Started: 2026-06-13
+- Iteration: 2 (per PRD-PERMANENT-HIDE.md)
+- Working on: Task-002: Update Cleanup Goroutine — Hide Instead of Delete
+- Started: 2026-06-15
 
 ## Last Completed
 
-- **Task-003/004: Fix group display in sidebar**
-  - `server/db/queries.go` — Added `GetUserGroupsWithActivity()` query with LEFT JOIN messages for last_active timestamp
-  - `server/handlers/messages.go` — Modified `getConversations` to merge user's groups into the response with `type: "group"` field
-  - Response now includes both 1:1 (`type: "direct"`) and group conversations
-  - Groups appear with: `id` (group UUID), `name` (encrypted_name bytes), `last_active`, `type: "group"`
-  - Client already handles `type === 'group'` in ChatListItem, Conversation, chats.js store
-  - `handleCreateGroup` in Main.svelte already calls `loadConversations()` after creation
+- **Task-002: Update Cleanup Goroutine — Hide Instead of Delete**
+  - `server/db/queries.go` — Renamed `DeleteExpiredMessages` → `HideExpiredMessages`; now finds expired messages and inserts per-user `message_deletions` entries (for sender + recipient of 1:1 messages) instead of hard-deleting from DB
+  - `server/storage/cleanup.go` — Added `mutualDeleteFn` field to `Cleaner` struct, updated queries interface, updated `NewCleaner` to accept the callback, updated `run()` to call `mutualDeleteFn` for each hidden message
+  - `server/handlers/messages.go` — Exported `CheckAndDeleteMutuallyHidden` (was `checkAndDeleteMutuallyHidden`) so `main.go` can reference it
+  - `server/main.go` — Wired `handlers.CheckAndDeleteMutuallyHidden` as the mutual-delete callback passed to `NewCleaner`
   - Build: ✅ Compiles cleanly
 
 ## Blockers
@@ -35,5 +35,4 @@
 
 ## Notes for Next Iteration
 
-- Task-005: End-to-end group chat test — verify groups appear in sidebar, messages can be sent/received
-- Group WebSocket notification (`NotifyNewMessage`) has a gap: group members aren't notified when a group message is sent (code comment: "group handler would notify all members")
+- The mutual-deletion pathway is now wired through both user-initiated hide and automatic cleanup expiry — if both users' retention hides the same message, it gets permanently deleted

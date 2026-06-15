@@ -7,30 +7,32 @@ import (
 
 // Cleaner handles periodic cleanup of expired messages and blobs.
 type Cleaner struct {
-	store    *BlobStore
-	queries  interface {
-		DeleteExpiredMessages() (int64, error)
+	store          *BlobStore
+	queries        interface {
+		HideExpiredMessages() ([]string, error)
 		DeleteExpiredFiles() ([]string, error)
 		RemoveFileRecord(path string) error
 	}
-	interval time.Duration
-	stopCh   chan struct{}
+	mutualDeleteFn func(messageID string)
+	interval       time.Duration
+	stopCh         chan struct{}
 }
 
 // NewCleaner creates a periodic cleaner.
 func NewCleaner(store *BlobStore, q interface {
-	DeleteExpiredMessages() (int64, error)
+	HideExpiredMessages() ([]string, error)
 	DeleteExpiredFiles() ([]string, error)
 	RemoveFileRecord(path string) error
-}, interval time.Duration) *Cleaner {
+}, mutualDeleteFn func(messageID string), interval time.Duration) *Cleaner {
 	if interval <= 0 {
 		interval = time.Hour
 	}
 	return &Cleaner{
-		store:    store,
-		queries:  q,
-		interval: interval,
-		stopCh:   make(chan struct{}),
+		store:          store,
+		queries:        q,
+		mutualDeleteFn: mutualDeleteFn,
+		interval:       interval,
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -60,12 +62,18 @@ func (c *Cleaner) Stop() {
 }
 
 func (c *Cleaner) run() {
-	// Delete expired messages
-	n, err := c.queries.DeleteExpiredMessages()
+	// Hide expired messages (move to message_deletions per-user)
+	messageIDs, err := c.queries.HideExpiredMessages()
 	if err != nil {
-		log.Printf("cleanup: delete expired messages: %v", err)
-	} else if n > 0 {
-		log.Printf("cleanup: deleted %d expired messages", n)
+		log.Printf("cleanup: hide expired messages: %v", err)
+	} else if len(messageIDs) > 0 {
+		log.Printf("cleanup: hidden %d expired messages", len(messageIDs))
+		// Trigger mutual-deletion check for each message
+		for _, msgID := range messageIDs {
+			if c.mutualDeleteFn != nil {
+				c.mutualDeleteFn(msgID)
+			}
+		}
 	}
 
 	// Delete expired files

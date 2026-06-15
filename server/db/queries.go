@@ -317,7 +317,7 @@ func (q *Queries) UpdateRetention(msgIDs []string, expiresIn string) error {
 
 	// Set retention relative to each message's created_at so old messages
 	// are deleted retroactively (not just now + duration).
-	// Uses strftime to output RFC 3339 so it matches DeleteExpiredMessages.
+	// Uses strftime to output RFC 3339 so it matches HideExpiredMessages.
 	mod := expiresInToSQL(expiresIn)
 	stmt, err := tx.Prepare(`UPDATE messages SET expires_at = strftime('%Y-%m-%dT%H:%M:%SZ', created_at, ?) WHERE id = ?`)
 	if err != nil {
@@ -864,17 +864,69 @@ func (q *Queries) PermanentlyDeleteMutuallyHiddenMessage(messageID string) error
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
-// DeleteExpiredMessages removes messages past their expires_at.
-// This only affects messages with an explicit per-message TTL set via expires_in.
-// Per-user retention filtering is handled separately on read (see GetDirectMessagesWithRetention).
-// Uses RFC3339 comparison to match the format written by UpdateRetention.
-func (q *Queries) DeleteExpiredMessages() (int64, error) {
+// HideExpiredMessages finds messages past their expires_at and inserts per-user
+// hide entries into message_deletions instead of hard-deleting from the DB.
+// Returns the list of message IDs that were hidden, so the caller can trigger
+// mutual-deletion checks for 1:1 conversations.
+func (q *Queries) HideExpiredMessages() ([]string, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := q.db.Exec(`DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at < ?`, now)
+
+	// Find expired messages with their sender/recipient info
+	rows, err := q.db.Query(
+		`SELECT id, sender_id, recipient_id, group_id FROM messages WHERE expires_at IS NOT NULL AND expires_at < ?`,
+		now,
+	)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return res.RowsAffected()
+	defer rows.Close()
+
+	var messageIDs []string
+	type hideEntry struct{ userID, messageID string }
+	var hideEntries []hideEntry
+
+	for rows.Next() {
+		var id, senderID string
+		var recipientID, groupID *string
+		if err := rows.Scan(&id, &senderID, &recipientID, &groupID); err != nil {
+			return nil, err
+		}
+		messageIDs = append(messageIDs, id)
+
+		// The sender's messages expired — hide from sender's view
+		hideEntries = append(hideEntries, hideEntry{senderID, id})
+
+		// Also hide from recipient's view if this is a 1:1 message
+		if recipientID != nil && *recipientID != "" {
+			hideEntries = append(hideEntries, hideEntry{*recipientID, id})
+		}
+	}
+
+	if len(hideEntries) > 0 {
+		tx, err := q.db.Begin()
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+
+		stmt, err := tx.Prepare(`INSERT OR IGNORE INTO message_deletions (user_id, message_id) VALUES (?, ?)`)
+		if err != nil {
+			return nil, err
+		}
+		defer stmt.Close()
+
+		for _, entry := range hideEntries {
+			if _, err := stmt.Exec(entry.userID, entry.messageID); err != nil {
+				return nil, err
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+	}
+
+	return messageIDs, nil
 }
 
 // DeleteExpiredFiles removes file metadata for expired files.

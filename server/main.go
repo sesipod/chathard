@@ -87,7 +87,9 @@ func main() {
 
 	// Start cleanup goroutine
 	cleanInterval, _ := time.ParseDuration(cfg.Cleanup.Interval)
-	cleaner := storage.NewCleaner(blobStore, queries, cleanInterval)
+	cleaner := storage.NewCleaner(blobStore, queries, func(msgID string) {
+		handlers.CheckAndDeleteMutuallyHidden(queries, msgID)
+	}, cleanInterval)
 	cleaner.Start()
 	defer cleaner.Stop()
 

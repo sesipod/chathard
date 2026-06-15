@@ -2,26 +2,26 @@
 
 ## Completed
 
-- [x] Task-001: Mutual Permanent Deletion — 1:1 Conversations (commit: pending)
+- [x] Task-001: Mutual Permanent Deletion — 1:1 Conversations (commit: 5829a83)
+- [x] Task-002: Update Cleanup Goroutine — Hide Instead of Delete (commit: pending)
 
 ## Current Iteration
 
-- Iteration: 1
-- Working on: Task-001: Mutual Permanent Deletion — 1:1 Conversations
+- Iteration: 2
+- Working on: Task-002: Update Cleanup Goroutine — Hide Instead of Delete
 - Started: 2026-06-15
-- Status: ✅ Complete
 
 ## Last Completed
 
-- **Task-001**: Mutual Permanent Deletion — 1:1 Conversations
-- **Duration**: ~10 minutes
+- **Task-002**: Update Cleanup Goroutine — Hide Instead of Delete
+- **Duration**: ~5 minutes
 - **Tests**: N/A (no test suite yet)
 - **Build**: ✅ All passing
 - **Key decisions**:
-  - Added 3 query functions in `server/db/queries.go`: `GetMessageParticipants`, `CountMessageDeletions`, `PermanentlyDeleteMutuallyHiddenMessage`
-  - Added orchestration function `checkAndDeleteMutuallyHidden` in `server/handlers/messages.go`
-  - Wired into both `hideMessage` and `batchHideMessages` handlers via goroutines (non-blocking)
-  - Group messages (with `group_id`) are explicitly excluded from mutual deletion
+  - `server/db/queries.go` — Renamed `DeleteExpiredMessages` → `HideExpiredMessages`; finds expired messages and inserts per-user `message_deletions` entries instead of hard-deleting
+  - `server/storage/cleanup.go` — Added `mutualDeleteFn` callback to `Cleaner` struct; triggers mutual-deletion check after hiding expired messages
+  - `server/handlers/messages.go` — Exported `CheckAndDeleteMutuallyHidden` for use by `main.go` and `cleanup.go`
+  - `server/main.go` — Wired `handlers.CheckAndDeleteMutuallyHidden` as the callback
 
 ## Blockers
 
@@ -29,5 +29,4 @@
 
 ## Notes for Next Iteration
 
-- Task-002 (cleanup goroutine) can reuse `checkAndDeleteMutuallyHidden` and `PermanentlyDeleteMutuallyHiddenMessage`
-- The `GetMessageParticipants` function returns `isGroup=true` for group messages — useful for Task-002
+- The mutual-deletion pathway is now wired through both user-initiated hide and automatic cleanup expiry
