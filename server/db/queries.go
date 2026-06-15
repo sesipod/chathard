@@ -213,10 +213,11 @@ func (q *Queries) MarkConversationRead(userID, conversationWith string, upToMsgI
 
 // GetConversationMessageIDs returns message IDs sent BY the user in a 1:1 conversation.
 // Used for per-user message retention — only the sender's own messages are affected.
+// Excludes messages the user has already hidden.
 func (q *Queries) GetConversationMessageIDs(userID, otherUserID string) ([]string, error) {
 	rows, err := q.db.Query(
-		`SELECT id FROM messages WHERE sender_id = ? AND recipient_id = ?`,
-		userID, otherUserID,
+		`SELECT id FROM messages WHERE sender_id = ? AND recipient_id = ? AND id NOT IN (SELECT message_id FROM message_deletions WHERE user_id = ?)`,
+		userID, otherUserID, userID,
 	)
 	if err != nil {
 		return nil, err
@@ -253,10 +254,11 @@ func (q *Queries) GetGroupMessageIDs(groupID string) ([]string, error) {
 
 // GetUserGroupMessageIDs returns message IDs sent BY a specific user in a group.
 // Used for per-user group retention — only the sender's own messages are affected.
+// Excludes messages the user has already hidden.
 func (q *Queries) GetUserGroupMessageIDs(userID, groupID string) ([]string, error) {
 	rows, err := q.db.Query(
-		`SELECT id FROM messages WHERE sender_id = ? AND group_id = ?`,
-		userID, groupID,
+		`SELECT id FROM messages WHERE sender_id = ? AND group_id = ? AND id NOT IN (SELECT message_id FROM message_deletions WHERE user_id = ?)`,
+		userID, groupID, userID,
 	)
 	if err != nil {
 		return nil, err
