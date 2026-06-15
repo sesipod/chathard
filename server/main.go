@@ -182,10 +182,10 @@ func main() {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":                        user.ID,
-			"handle":                    user.Handle,
-			"public_key_fingerprint":    hex.EncodeToString(user.PublicKeyEd25519[:8]),
-			"recovery_codes_remaining":  remaining,
+			"id":                       user.ID,
+			"handle":                   user.Handle,
+			"public_key_fingerprint":   hex.EncodeToString(user.PublicKeyEd25519[:8]),
+			"recovery_codes_remaining": remaining,
 		})
 	})
 

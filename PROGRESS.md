@@ -7,7 +7,7 @@
 - [x] Task-003: Add client-side single message delete to MessageBubble
 - [x] Task-004: Add multi-select message deletion mode (commit: 913e5e6)
 - [x] Task-005: Add conversation tracking to files + list endpoint (commit: a11a7dd)
-- [x] Task-006: Files Modal in chat UI (commit: pending)
+- [x] Task-006: Files Modal in chat UI (commit: 93bb526)
 
 ## Current Iteration
 
