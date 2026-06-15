@@ -327,13 +327,48 @@ func (h *MessagesHandler) updateRetention(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(msgIDs) > 0 {
-		if err := h.queries.UpdateRetention(msgIDs, req.ExpiresIn); err != nil {
-			http.Error(w, "Failed to update message retention", http.StatusInternalServerError)
-			return
+		if req.ExpiresIn != "" {
+			// When setting a retention duration, permanently hide messages
+			// that are already past the new cutoff — they should never re-appear.
+			d, _ := parseDuration(req.ExpiresIn)
+			cutoff := time.Now().UTC().Add(-d)
+			expiredIDs, err := h.queries.GetExpiredMessageIDs(msgIDs, cutoff)
+			if err == nil && len(expiredIDs) > 0 {
+				h.queries.HideMessages(userID, expiredIDs)
+			}
+			// Set expires_at on remaining messages for future cleanup
+			if len(expiredIDs) < len(msgIDs) {
+				activeIDs := subtractSlice(msgIDs, expiredIDs)
+				if err := h.queries.UpdateRetention(activeIDs, req.ExpiresIn); err != nil {
+					http.Error(w, "Failed to update message retention", http.StatusInternalServerError)
+					return
+				}
+			}
+		} else {
+			// Clearing retention — just remove expires_at
+			if err := h.queries.UpdateRetention(msgIDs, req.ExpiresIn); err != nil {
+				http.Error(w, "Failed to update message retention", http.StatusInternalServerError)
+				return
+			}
 		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// subtractSlice returns elements in a that are not in b.
+func subtractSlice(a, b []string) []string {
+	bSet := make(map[string]bool, len(b))
+	for _, id := range b {
+		bSet[id] = true
+	}
+	var out []string
+	for _, id := range a {
+		if !bSet[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (h *MessagesHandler) getConversations(w http.ResponseWriter, r *http.Request) {

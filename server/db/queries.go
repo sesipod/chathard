@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -545,6 +546,34 @@ func (q *Queries) GetFile(id string) (*FileRow, error) {
 func (q *Queries) DeleteFile(id string) error {
 	_, err := q.db.Exec(`DELETE FROM files WHERE id = ?`, id)
 	return err
+}
+
+// GetExpiredMessageIDs returns IDs from the given list whose created_at is before the cutoff.
+func (q *Queries) GetExpiredMessageIDs(msgIDs []string, cutoff time.Time) ([]string, error) {
+	if len(msgIDs) == 0 {
+		return []string{}, nil
+	}
+	cutoffStr := cutoff.UTC().Format(time.RFC3339)
+	query := `SELECT id FROM messages WHERE id IN (?` + strings.Repeat(`,?`, len(msgIDs)-1) + `) AND created_at < ?`
+	args := make([]interface{}, len(msgIDs)+1)
+	for i, id := range msgIDs {
+		args[i] = id
+	}
+	args[len(msgIDs)] = cutoffStr
+	rows, err := q.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var expired []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		expired = append(expired, id)
+	}
+	return expired, rows.Err()
 }
 
 func (q *Queries) LinkFileToMessage(fileID, messageID string) error {
