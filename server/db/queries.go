@@ -500,7 +500,7 @@ func (q *Queries) InsertFile(id, uploaderID, encryptedBlobPath string, encrypted
 
 func (q *Queries) GetConversationFiles(targetID, targetType string) ([]FileRow, error) {
 	rows, err := q.db.Query(
-		`SELECT id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, created_at, expires_at FROM files WHERE target_id = ? AND target_type = ? ORDER BY created_at DESC`,
+		`SELECT id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, created_at, expires_at, target_id, target_type FROM files WHERE target_id = ? AND target_type = ? ORDER BY created_at DESC`,
 		targetID, targetType,
 	)
 	if err != nil {
@@ -513,7 +513,7 @@ func (q *Queries) GetConversationFiles(targetID, targetType string) ([]FileRow, 
 		f := &FileRow{}
 		var createdAt string
 		var expiresAt *string
-		if err := rows.Scan(&f.ID, &f.UploaderID, &f.EncryptedBlobPath, &f.EncryptedMetadata, &f.SizeBytes, &createdAt, &expiresAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.UploaderID, &f.EncryptedBlobPath, &f.EncryptedMetadata, &f.SizeBytes, &createdAt, &expiresAt, &f.TargetID, &f.TargetType); err != nil {
 			return nil, err
 		}
 		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -868,13 +868,15 @@ type GroupRow struct {
 }
 
 type FileRow struct {
-	ID                string
-	UploaderID        string
-	EncryptedBlobPath string
-	EncryptedMetadata []byte
-	SizeBytes         int64
-	CreatedAt         time.Time
-	ExpiresAt         *time.Time
+	ID                string     `json:"id"`
+	UploaderID        string     `json:"uploader_id"`
+	EncryptedBlobPath string     `json:"encrypted_blob_path"`
+	EncryptedMetadata []byte     `json:"encrypted_metadata"`
+	SizeBytes         int64      `json:"size_bytes"`
+	CreatedAt         time.Time  `json:"created_at"`
+	ExpiresAt         *time.Time `json:"expires_at"`
+	TargetID          string     `json:"target_id"`
+	TargetType        string     `json:"target_type"`
 }
 
 type RecoveryBackupRow struct {

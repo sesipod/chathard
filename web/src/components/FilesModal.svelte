@@ -92,7 +92,7 @@
                 </svg>
               </div>
               <div class="file-info">
-                <span class="file-id">{file.id.slice(0, 12)}…</span>
+                <span class="file-id">{file.id ? file.id.slice(0, 12) + '…' : 'Unknown'}</span>
                 <span class="file-meta">{formatSize(file.size_bytes)} · {formatDate(file.created_at)}</span>
               </div>
               <button class="download-btn" on:click={() => handleDownload(file.id)} title="Download">
