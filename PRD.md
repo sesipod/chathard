@@ -1,33 +1,20 @@
-# PRD: Files Modal, Message Deletion & Multi-Select
+# PRD: Auto-Delete Retention — Permanent Hide + Mutual Deletion
 
-See `PRDS/PRD-FILES-MESSAGE-DELETE.md` for full PRD with acceptance criteria.
+See `PRDS/PRD-PERMANENT-HIDE.md` for full PRD with acceptance criteria.
 
 ## Tasks
 
-### Task-001: Create `message_deletions` table + queries
-Migration, schema, query functions, update message fetches to filter hidden messages.
+### Task-001: Mutual Permanent Deletion — 1:1 Conversations
+When both participants in a 1:1 have hidden the same message, physically DELETE it from the `messages` table + clean up `message_deletions`. Trigger from `HideMessage`/`HideMessages` and cleanup goroutine.
 
-### Task-002: Add `POST /api/messages/hide` + `POST /api/messages/batch-hide`
-Server handlers for single and batch per-user message hiding.
+### Task-002: Update Cleanup Goroutine — Hide Instead of Delete
+Rename `DeleteExpiredMessages` to `HideExpiredMessages`. Move expired messages into `message_deletions` per-user instead of hard-deleting. Trigger mutual-deletion check.
 
-### Task-003: Add client-side single message delete to MessageBubble
-Delete button on all messages (sent AND received), confirmation dialog, hide API call, store removal.
+### Task-003: Internal Language Cleanup — "Delete" → "Hide"
+Rename internal function names, variables, and comments. Keep UI text and API paths unchanged.
 
-### Task-004: Add multi-select message deletion mode
-Select button in header, checkboxes, floating action bar, batch hide via API.
-
-### Task-005: Add `GET /api/conversations/:id/files` endpoint
-Scan messages for 📎 pattern, return file metadata.
-
-### Task-006: Files Modal in chat UI
-FilesModal.svelte component, wire up to conversation header Files button.
-
-**Acceptance Criteria**:
-- [ ] New function exists in `server/db/queries.go`
-- [ ] Returns message IDs where `sender_id = userID AND group_id = groupID`
-- [ ] Returns empty slice (not nil) when no messages found
-- [ ] Builds without errors
-- [ ] Follows existing patterns (deferred rows.Close, scan loop, etc.)
+### Task-004: Verify Exclusion in All Retrieval Queries
+Audit all message SELECT queries to ensure `message_deletions` filtering is applied consistently.
 
 ### Task-002: Wire `updateRetention` to set `expires_at` on existing messages
 

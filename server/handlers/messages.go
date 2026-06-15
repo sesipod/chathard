@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -356,6 +357,27 @@ func (h *MessagesHandler) updateRetention(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// checkAndDeleteMutuallyHidden checks if both participants in a 1:1 conversation
+// have hidden the given message. If so, physically deletes it from the DB.
+func checkAndDeleteMutuallyHidden(queries *db.Queries, messageID string) {
+	_, recipientID, isGroup, err := queries.GetMessageParticipants(messageID)
+	if err != nil || isGroup || recipientID == "" {
+		return // not a 1:1 message, or error — skip
+	}
+
+	count, err := queries.CountMessageDeletions(messageID)
+	if err != nil || count < 2 {
+		return // not both participants have hidden it
+	}
+
+	// Both participants have hidden this 1:1 message — permanently delete
+	if err := queries.PermanentlyDeleteMutuallyHiddenMessage(messageID); err != nil {
+		log.Printf("mutual delete: failed to delete message %s: %v", messageID, err)
+	} else {
+		log.Printf("mutual delete: permanently deleted message %s (hidden by both participants)", messageID)
+	}
+}
+
 // subtractSlice returns elements in a that are not in b.
 func subtractSlice(a, b []string) []string {
 	bSet := make(map[string]bool, len(b))
@@ -457,6 +479,9 @@ func (h *MessagesHandler) hideMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+
+	// Check if both participants have now hidden this 1:1 message
+	go checkAndDeleteMutuallyHidden(h.queries, req.MessageID)
 }
 
 type batchHideMessageReq struct {
@@ -483,4 +508,9 @@ func (h *MessagesHandler) batchHideMessages(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+
+	// Check if both participants have now hidden any of these 1:1 messages
+	for _, msgID := range req.MessageIDs {
+		go checkAndDeleteMutuallyHidden(h.queries, msgID)
+	}
 }

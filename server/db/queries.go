@@ -822,6 +822,46 @@ func (q *Queries) GetHiddenMessageIDs(userID string) ([]string, error) {
 	return ids, rows.Err()
 }
 
+// GetMessageParticipants returns sender_id and recipient_id for a 1:1 message.
+// Returns isGroup=true if the message has a non-NULL group_id.
+func (q *Queries) GetMessageParticipants(messageID string) (senderID, recipientID string, isGroup bool, err error) {
+	row := q.db.QueryRow(`SELECT sender_id, recipient_id, group_id FROM messages WHERE id = ?`, messageID)
+	var groupID *string
+	if err := row.Scan(&senderID, &recipientID, &groupID); err != nil {
+		return "", "", false, err
+	}
+	if groupID != nil && *groupID != "" {
+		return "", "", true, nil
+	}
+	return senderID, recipientID, false, nil
+}
+
+// CountMessageDeletions returns how many users have hidden a specific message.
+func (q *Queries) CountMessageDeletions(messageID string) (int, error) {
+	var count int
+	err := q.db.QueryRow(`SELECT COUNT(*) FROM message_deletions WHERE message_id = ?`, messageID).Scan(&count)
+	return count, err
+}
+
+// PermanentlyDeleteMutuallyHiddenMessage deletes a message from messages table
+// AND removes all message_deletions entries for it. Only call this after verifying
+// both participants have hidden it.
+func (q *Queries) PermanentlyDeleteMutuallyHiddenMessage(messageID string) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM message_deletions WHERE message_id = ?`, messageID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM messages WHERE id = ?`, messageID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 // DeleteExpiredMessages removes messages past their expires_at.
