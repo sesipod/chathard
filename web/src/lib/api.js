@@ -282,6 +282,7 @@ const api = {
     if (targetType) {
       form.append('target_type', targetType);
     }
+    form.append('original_name', file.name);
     const res = await fetch('/api/files/upload', {
       method: 'POST',
       headers: { Authorization: `Bearer ${getToken()}` }, // no Content-Type — browser sets multipart
@@ -289,6 +290,15 @@ const api = {
     });
     await throwIfNotOk(res);
     return res.json();
+  },
+
+  async linkFileToMessage(fileId, messageId) {
+    const res = await fetch(`/api/files/${fileId}/link-message`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify({ message_id: messageId }),
+    });
+    await throwIfNotOk(res);
   },
 
   async fetchConversationFiles(convId, isGroup) {

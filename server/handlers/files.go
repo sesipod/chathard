@@ -39,6 +39,10 @@ func (h *FilesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && path == "upload":
 		h.uploadFile(w, r)
+	case r.Method == http.MethodPatch && strings.HasSuffix(path, "/link-message"):
+		// /api/files/{id}/link-message
+		fileID := strings.TrimSuffix(path, "/link-message")
+		h.linkFileToMessage(w, r, fileID)
 	case r.Method == http.MethodGet && path != "" && path != "upload":
 		h.downloadFile(w, r, path)
 	case r.Method == http.MethodDelete && path != "" && path != "upload":
@@ -61,6 +65,7 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		expiresIn     string
 		targetID      string
 		targetType    string
+		originalName  string
 	)
 
 	if isChunked {
@@ -93,6 +98,7 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		expiresIn = r.FormValue("expires_in")
 		targetID = r.FormValue("target_id")
 		targetType = r.FormValue("target_type")
+		originalName = r.FormValue("original_name")
 
 		fileID = storage.GenerateUUID()
 	} else {
@@ -103,6 +109,7 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 			ExpiresIn     string `json:"expires_in"`
 			TargetID      string `json:"target_id"`
 			TargetType    string `json:"target_type"`
+			OriginalName  string `json:"original_name"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -119,6 +126,7 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		expiresIn = req.ExpiresIn
 		targetID = req.TargetID
 		targetType = req.TargetType
+		originalName = req.OriginalName
 		fileID = storage.GenerateUUID()
 	}
 
@@ -141,7 +149,7 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.queries.InsertFile(fileID, userID, fileID[:2]+"/"+fileID+".enc", encryptedMeta, int64(len(encryptedData)), expiresAt, targetID, targetType); err != nil {
+	if err := h.queries.InsertFile(fileID, userID, fileID[:2]+"/"+fileID+".enc", encryptedMeta, int64(len(encryptedData)), expiresAt, targetID, targetType, originalName, ""); err != nil {
 		h.store.DeleteBlob(fileID)
 		log.Printf("upload: insert file record %s (meta=%d data=%d): %v", fileID, len(encryptedMeta), len(encryptedData), err)
 		http.Error(w, "Failed to create file record", http.StatusInternalServerError)
@@ -284,6 +292,37 @@ func (h *FilesHandler) deleteFile(w http.ResponseWriter, r *http.Request, fileID
 
 	if err := h.queries.DeleteFile(fileID); err != nil {
 		http.Error(w, "Failed to delete file record", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *FilesHandler) linkFileToMessage(w http.ResponseWriter, r *http.Request, fileID string) {
+	userID := r.Context().Value(CtxKeyUserID).(string)
+
+	fileRec, err := h.queries.GetFile(fileID)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
+	// Only uploader can link
+	if fileRec.UploaderID != userID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	var req struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.MessageID == "" {
+		http.Error(w, "Missing message_id", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.queries.LinkFileToMessage(fileID, req.MessageID); err != nil {
+		http.Error(w, "Failed to link message", http.StatusInternalServerError)
 		return
 	}
 

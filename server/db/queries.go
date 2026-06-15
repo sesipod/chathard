@@ -485,22 +485,22 @@ func (q *Queries) GetUserGroupsWithActivity(userID string) ([]GroupWithActivity,
 
 // ─── Files ────────────────────────────────────────────────────────────────────
 
-func (q *Queries) InsertFile(id, uploaderID, encryptedBlobPath string, encryptedMetadata []byte, sizeBytes int64, expiresAt *time.Time, targetID, targetType string) error {
+func (q *Queries) InsertFile(id, uploaderID, encryptedBlobPath string, encryptedMetadata []byte, sizeBytes int64, expiresAt *time.Time, targetID, targetType, originalName, messageID string) error {
 	var exp *string
 	if expiresAt != nil {
 		s := expiresAt.UTC().Format(time.RFC3339)
 		exp = &s
 	}
 	_, err := q.db.Exec(
-		`INSERT INTO files (id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, expires_at, target_id, target_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, uploaderID, encryptedBlobPath, encryptedMetadata, sizeBytes, exp, nullStr(targetID), nullStr(targetType),
+		`INSERT INTO files (id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, expires_at, target_id, target_type, original_name, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, uploaderID, encryptedBlobPath, encryptedMetadata, sizeBytes, exp, nullStr(targetID), nullStr(targetType), nullStr(originalName), nullStr(messageID),
 	)
 	return err
 }
 
 func (q *Queries) GetConversationFiles(targetID, targetType string) ([]FileRow, error) {
 	rows, err := q.db.Query(
-		`SELECT id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, created_at, expires_at, target_id, target_type FROM files WHERE target_id = ? AND target_type = ? ORDER BY created_at DESC`,
+		`SELECT id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, created_at, expires_at, target_id, target_type, original_name, message_id FROM files WHERE target_id = ? AND target_type = ? ORDER BY created_at DESC`,
 		targetID, targetType,
 	)
 	if err != nil {
@@ -513,7 +513,7 @@ func (q *Queries) GetConversationFiles(targetID, targetType string) ([]FileRow, 
 		f := &FileRow{}
 		var createdAt string
 		var expiresAt *string
-		if err := rows.Scan(&f.ID, &f.UploaderID, &f.EncryptedBlobPath, &f.EncryptedMetadata, &f.SizeBytes, &createdAt, &expiresAt, &f.TargetID, &f.TargetType); err != nil {
+		if err := rows.Scan(&f.ID, &f.UploaderID, &f.EncryptedBlobPath, &f.EncryptedMetadata, &f.SizeBytes, &createdAt, &expiresAt, &f.TargetID, &f.TargetType, &f.OriginalName, &f.MessageID); err != nil {
 			return nil, err
 		}
 		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -527,11 +527,11 @@ func (q *Queries) GetConversationFiles(targetID, targetType string) ([]FileRow, 
 }
 
 func (q *Queries) GetFile(id string) (*FileRow, error) {
-	row := q.db.QueryRow(`SELECT id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, created_at, expires_at FROM files WHERE id = ?`, id)
+	row := q.db.QueryRow(`SELECT id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, created_at, expires_at, target_id, target_type, original_name, message_id FROM files WHERE id = ?`, id)
 	f := &FileRow{}
 	var createdAt string
 	var expiresAt *string
-	if err := row.Scan(&f.ID, &f.UploaderID, &f.EncryptedBlobPath, &f.EncryptedMetadata, &f.SizeBytes, &createdAt, &expiresAt); err != nil {
+	if err := row.Scan(&f.ID, &f.UploaderID, &f.EncryptedBlobPath, &f.EncryptedMetadata, &f.SizeBytes, &createdAt, &expiresAt, &f.TargetID, &f.TargetType, &f.OriginalName, &f.MessageID); err != nil {
 		return nil, err
 	}
 	f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -544,6 +544,11 @@ func (q *Queries) GetFile(id string) (*FileRow, error) {
 
 func (q *Queries) DeleteFile(id string) error {
 	_, err := q.db.Exec(`DELETE FROM files WHERE id = ?`, id)
+	return err
+}
+
+func (q *Queries) LinkFileToMessage(fileID, messageID string) error {
+	_, err := q.db.Exec(`UPDATE files SET message_id = ? WHERE id = ?`, messageID, fileID)
 	return err
 }
 
@@ -877,6 +882,8 @@ type FileRow struct {
 	ExpiresAt         *time.Time `json:"expires_at"`
 	TargetID          string     `json:"target_id"`
 	TargetType        string     `json:"target_type"`
+	OriginalName      string     `json:"original_name"`
+	MessageID         string     `json:"message_id"`
 }
 
 type RecoveryBackupRow struct {

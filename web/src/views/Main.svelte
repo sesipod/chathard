@@ -315,6 +315,8 @@
                 : msg,
             ),
           }));
+          // Link file to message so FilesModal can jump to it
+          api.linkFileToMessage(result.file_id, msgResult.id).catch(() => {});
         }
         chatStore.loadConversations();
         showToast('File sent');
@@ -423,6 +425,19 @@
     showFilesModal = false;
   }
 
+  function handleJumpToMessage(e) {
+    const { messageId } = e.detail;
+    if (!messageId) return;
+    // The conversation is already active — we just close the modal.
+    // The message list will need to scroll to this message.
+    // The `loadConversations` and `loadMessages` already happen on conversation switch.
+    showFilesModal = false;
+    // Mark this message ID for scrolling after re-render
+    scrollToMessageId = messageId;
+  }
+
+  let scrollToMessageId = '';
+
   function handleDeleteMessage(e) {
     const { messageId } = e.detail;
     const convId = $activeConversationId;
@@ -518,6 +533,7 @@
     convId={filesModalConvId}
     isGroup={filesModalIsGroup}
     on:close={handleCloseFilesModal}
+    on:jumpToMessage={handleJumpToMessage}
   />
 
   <!-- Toast notifications -->

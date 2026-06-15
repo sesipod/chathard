@@ -72,7 +72,9 @@ CREATE TABLE IF NOT EXISTS files (
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at          TEXT,
     target_id           TEXT,
-    target_type         TEXT
+    target_type         TEXT,
+    original_name       TEXT,
+    message_id          TEXT
 );
 
 -- Per-user retention: each user controls what THEY see, without affecting others.
