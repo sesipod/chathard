@@ -1,11 +1,14 @@
-# /opt/tailchat/config.yaml — TailChat Server Configuration
+# Optional config file for running the server outside Docker.
+# In Docker, the same settings come from env vars (see compose.yaml / .env.example).
 server:
-  addr: "localhost:3000"
-  tailnet_domain: "example.ts.net"  # your tailnet name
+  addr: "127.0.0.1:3000"
+  domain: "chat.example.com"     # hostname users open while on the VPN
+  vpn_cidrs: ["10.8.0.0/24"]     # WireGuard peer subnet(s) allowed in
+  trusted_proxies: ["127.0.0.1/32"]  # reverse proxy whose X-Forwarded-For is trusted
 
 storage:
-  db_path: "/opt/tailchat/data/tailchat.db"
-  blob_dir: "/opt/tailchat/data/blobs"
+  db_path: "./data/tailchat.db"
+  blob_dir: "./data/blobs"
   max_blob_storage: "10GB"
   max_upload_size: "100MB"
 
@@ -14,4 +17,4 @@ cleanup:
 
 logging:
   level: "info"   # debug, info, warn, error
-  format: "json"  # json for journald
+  format: "json"

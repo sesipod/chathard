@@ -35,9 +35,19 @@ type WSPayload struct {
 	UpToMsgID   string `json:"up_to_msg_id,omitempty"`
 }
 
+var allowedOrigins = map[string]bool{}
+
+// SetAllowedOrigins sets the Origins allowed to open a WebSocket. Call once at
+// startup, before serving.
+func SetAllowedOrigins(origins map[string]bool) {
+	allowedOrigins = origins
+}
+
+// The VPN gate has already checked the client IP; checking Origin as well
+// stops another page in a VPN user's browser from hijacking their socket.
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Verified by Tailscale auth middleware
+		return allowedOrigins[r.Header.Get("Origin")]
 	},
 }
 

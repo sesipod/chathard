@@ -1,0 +1,124 @@
+# TailChat over WireGuard (wg-easy).
+#
+#   phone ──WireGuard UDP 51820──► wg-easy (wg0 = 10.8.0.1)
+#                                    │  same network namespace:
+#                                    ├─ wg-firewall  (wg0 → only tcp/443)
+#                                    ├─ caddy :443   (Let's Encrypt via Cloudflare DNS-01)
+#                                    └─ chat 127.0.0.1:3000
+#
+# Only UDP 51820 is exposed to the internet. The chat app is never published;
+# it is reachable only through the tunnel. Copy .env.example to .env first.
+
+name: tailchat
+
+services:
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:15
+    restart: unless-stopped
+    environment:
+      # Admin UI: bound to the container's bridge IP (never wg0) and published
+      # only on the Tailscale IP below. Plain HTTP is acceptable there because
+      # Tailscale already encrypts the hop.
+      HOST: 10.42.42.42
+      PORT: "51821"
+      INSECURE: "true"
+      DISABLE_IPV6: "true"
+      # First-run setup only; remove INIT_PASSWORD from .env afterwards.
+      INIT_ENABLED: ${WG_INIT_ENABLED:-true}
+      INIT_USERNAME: ${WG_ADMIN_USER:-admin}
+      INIT_PASSWORD: ${WG_ADMIN_PASSWORD:-}
+      INIT_HOST: ${WG_ENDPOINT_HOST:?set WG_ENDPOINT_HOST}
+      INIT_PORT: "51820"
+      INIT_IPV4_CIDR: ${VPN_CIDR:-10.8.0.0/24}
+      INIT_IPV6_CIDR: fdcc:ad94:bacf:61a4::/64
+      # Split tunnel: clients send only chat traffic through the VPN.
+      INIT_ALLOWED_IPS: ${WG_SERVER_IP:-10.8.0.1}/32
+      INIT_DNS: 1.1.1.1,1.0.0.1
+    ports:
+      - "51820:51820/udp"
+      - "${WG_ADMIN_BIND:?set WG_ADMIN_BIND}:51821:51821/tcp"
+    volumes:
+      - wg_data:/etc/wireguard
+      - /lib/modules:/lib/modules:ro
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      # Nothing is ever routed through this box: peers talk to 10.8.0.1 only.
+      net.ipv4.ip_forward: "0"
+      net.ipv4.conf.all.src_valid_mark: "1"
+    networks:
+      wg:
+        ipv4_address: 10.42.42.42
+
+  wg-firewall:
+    image: ghcr.io/wg-easy/wg-easy:15
+    restart: unless-stopped
+    network_mode: service:wg-easy
+    depends_on:
+      wg-easy:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/wg-firewall.sh"]
+    environment:
+      WG_SERVER_IP: ${WG_SERVER_IP:-10.8.0.1}
+    volumes:
+      - ./deploy/wg-firewall.sh:/wg-firewall.sh:ro
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 10s
+      retries: 6
+
+  caddy:
+    build: ./deploy/caddy
+    restart: unless-stopped
+    network_mode: service:wg-easy
+    depends_on:
+      wg-firewall:
+        condition: service_healthy
+    environment:
+      CHAT_DOMAIN: ${CHAT_DOMAIN:?set CHAT_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
+      CF_API_TOKEN: ${CF_API_TOKEN:?set CF_API_TOKEN}
+      VPN_CIDR: ${VPN_CIDR:-10.8.0.0/24}
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+
+  chat:
+    build: .
+    restart: unless-stopped
+    network_mode: service:wg-easy
+    depends_on:
+      wg-firewall:
+        condition: service_healthy
+    environment:
+      CHAT_ADDR: 127.0.0.1:3000
+      CHAT_DOMAIN: ${CHAT_DOMAIN:?set CHAT_DOMAIN}
+      VPN_CIDRS: ${VPN_CIDR:-10.8.0.0/24}
+      TRUSTED_PROXIES: 127.0.0.1/32
+    volumes:
+      - chat_data:/data
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+
+networks:
+  wg:
+    ipam:
+      config:
+        - subnet: 10.42.42.0/24
+
+volumes:
+  wg_data:
+  caddy_data:
+  caddy_config:
+  chat_data:

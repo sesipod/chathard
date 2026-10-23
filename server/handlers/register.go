@@ -9,18 +9,18 @@ import (
 )
 
 type RegisterRequest struct {
-	Handle               string              `json:"handle"`
-	PublicKeyEd25519     []byte              `json:"public_key_ed25519"`
-	PublicKeyX25519      []byte              `json:"public_key_x25519"`
-	DerivedPublicKeyEd25519 []byte           `json:"derived_public_key_ed25519"`
-	EncryptedKeyBackups  []EncryptedKeyBackup `json:"encrypted_key_backups"`
+	Handle                  string               `json:"handle"`
+	PublicKeyEd25519        []byte               `json:"public_key_ed25519"`
+	PublicKeyX25519         []byte               `json:"public_key_x25519"`
+	DerivedPublicKeyEd25519 []byte               `json:"derived_public_key_ed25519"`
+	EncryptedKeyBackups     []EncryptedKeyBackup `json:"encrypted_key_backups"`
 }
 
 type EncryptedKeyBackup struct {
-	RecoveryCodeHash     string `json:"recovery_code_hash"`
-	EncryptedPrivateKey  []byte `json:"encrypted_private_key"`
-	Salt                 []byte `json:"salt"`
-	AuthSalt             []byte `json:"auth_salt"`
+	RecoveryCodeHash    string `json:"recovery_code_hash"`
+	EncryptedPrivateKey []byte `json:"encrypted_private_key"`
+	Salt                []byte `json:"salt"`
+	AuthSalt            []byte `json:"auth_salt"`
 }
 
 // RegisterHandler handles POST /api/register.
@@ -57,13 +57,6 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get Tailscale identity
-	tailscaleUser := r.Header.Get("Tailscale-User-Login")
-	if tailscaleUser == "" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
 	userID := uuid.New().String()
 
 	if err := h.queries.CreateUser(userID, req.Handle, req.PublicKeyEd25519, req.PublicKeyX25519, req.DerivedPublicKeyEd25519); err != nil {
@@ -80,9 +73,8 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]string{
-		"user_id":  userID,
-		"handle":   req.Handle,
-		"identity": tailscaleUser,
+		"user_id": userID,
+		"handle":  req.Handle,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

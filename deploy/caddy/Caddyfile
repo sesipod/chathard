@@ -1,0 +1,35 @@
+{
+	admin off
+	email {$ACME_EMAIL}
+	# Only 443 is used; there is no public HTTP listener to redirect from.
+	auto_https disable_redirects
+}
+
+{$CHAT_DOMAIN} {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+		resolvers 1.1.1.1
+	}
+
+	# Defence in depth: the firewall sidecar already limits wg0 to this port,
+	# and the app checks the client IP again. Anything not from a WireGuard
+	# peer is dropped without a response.
+	@outside not remote_ip {$VPN_CIDR}
+	abort @outside
+
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+	}
+
+	# Caddy replaces any client-sent X-Forwarded-For with the real peer IP,
+	# which the app trusts because this proxy talks to it over loopback.
+	reverse_proxy 127.0.0.1:3000
+}

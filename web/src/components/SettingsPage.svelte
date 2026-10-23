@@ -158,7 +158,7 @@
 
 <section class="sec"><h3 class="st">About</h3><div class="card">
   <div class="row"><span>App version</span><span class="mono">{serverInfo?.version || '1.0.0'}</span></div>
-  <div class="row"><span>Tailnet</span><span class="mono">{serverInfo?.tailnet_domain || '…'}</span></div>
+  <div class="row"><span>Network</span><span class="mono">{serverInfo ? `${serverInfo.network} · ${serverInfo.domain}` : '…'}</span></div>
   <div class="row"><span>Server</span><span class="mono">{serverInfo ? `${serverInfo.status} · ${serverInfo.uptime}` : '…'}</span></div>
 </div></section>
 {/if}
@@ -176,7 +176,7 @@
 {/if}
 
 {#if confirmLogout}<div class="dlg-bg" on:click={() => { confirmLogout = false; }}><div class="dlg" on:click|stopPropagation>
-  <h3>Log out?</h3><p>You will need to re-authenticate via Tailscale and prove ownership of your keypair to log back in.</p>
+  <h3>Log out?</h3><p>You will need to be connected to the WireGuard VPN and prove ownership of your keypair to log back in.</p>
   <div class="dlg-actions"><button class="btn" on:click={() => { confirmLogout = false; }}>Cancel</button><button class="btn btn-danger" on:click={doLogout}>Log out</button></div>
 </div></div>{/if}
 

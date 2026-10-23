@@ -36,6 +36,7 @@ func main() {
 	dev := flag.Bool("dev", false, "Enable Vite dev proxy (proxy / to localhost:5173)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	configPath := flag.String("config", "config.yaml", "Path to config file")
+	healthcheck := flag.Bool("healthcheck", false, "Probe /api/health on the configured address and exit (for container health checks)")
 	flag.Parse()
 
 	if *showVersion {
@@ -60,7 +61,25 @@ func main() {
 		cfg.Server.Addr = *addr
 	}
 
-	log.Printf("TailChat v%s starting...", version)
+	if *healthcheck {
+		client := &http.Client{Timeout: 3 * time.Second}
+		resp, err := client.Get("http://" + cfg.Server.Addr + "/api/health")
+		if err != nil || resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	log.Printf("TailChat v%s starting (domain %s, VPN %s)...", version, cfg.Server.Domain, strings.Join(cfg.Server.VPNCIDRs, ","))
+
+	// Only the app's own HTTPS origin (plus local Vite dev) may make
+	// cross-origin requests or open WebSockets.
+	allowedOrigins := map[string]bool{"https://" + cfg.Server.Domain: true}
+	if *dev {
+		allowedOrigins["http://localhost:5173"] = true
+		allowedOrigins["http://localhost:3000"] = true
+	}
+	handlers.SetAllowedOrigins(allowedOrigins)
 
 	// Open database
 	sqlDB, err := sql.Open("sqlite", cfg.Storage.DBPath+"?_journal_mode=WAL&_busy_timeout=5000")
@@ -126,23 +145,25 @@ func main() {
 			"status":  "ok",
 			"version": version,
 			"uptime":  uptime,
+			"network": "WireGuard",
+			"domain":  cfg.Server.Domain,
 		})
 	})
 
-	// Register endpoint (Tailscale auth only, no session required)
+	// Register endpoint (VPN gate only, no session required)
 	registerHandler := handlers.NewRegisterHandler(queries)
-	mux.Handle("/api/register", rl.Middleware("register", rl.Cfg().Register)(tailscaleAuth(registerHandler)))
+	mux.Handle("/api/register", rl.Middleware("register", rl.Cfg().Register)(registerHandler))
 
 	// Auth endpoints (rate limited, no session required)
 	authHandler := handlers.NewAuthHandler(queries)
-	mux.Handle("/api/auth/", tailscaleAuth(rl.Middleware("auth", rl.Cfg().Messages)(authHandler)))
+	mux.Handle("/api/auth/", rl.Middleware("auth", rl.Cfg().Messages)(authHandler))
 
 	// Recover endpoint (rate limited)
 	recoverHandler := handlers.NewRecoverHandler(queries)
-	mux.Handle("/api/recover", tailscaleAuth(rl.Middleware("recover", rl.Cfg().Recovery)(recoverHandler)))
+	mux.Handle("/api/recover", rl.Middleware("recover", rl.Cfg().Recovery)(recoverHandler))
 
-	// User search (Tailscale auth + rate limit, no session required — used during registration)
-	mux.Handle("/api/users/search", tailscaleAuth(rl.Middleware("search", rl.Cfg().UserSearch)(
+	// User search (VPN gate + rate limit, no session required — used during registration)
+	mux.Handle("/api/users/search", rl.Middleware("search", rl.Cfg().UserSearch)(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -170,7 +191,7 @@ func main() {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(users)
 		}),
-	)))
+	))
 
 	// Authenticated routes
 	authMux := http.NewServeMux()
@@ -206,7 +227,7 @@ func main() {
 	authMux.Handle("/api/ws", wsHandler)
 	authMux.Handle("/ws", wsHandler)
 	// Also handle /ws directly (spec says GET /ws)
-	mux.Handle("/ws", tailscaleAuth(sessionAuth(queries)(wsHandler)))
+	mux.Handle("/ws", sessionAuth(queries)(wsHandler))
 
 	// Files
 	maxUpload := parseSize(cfg.Storage.MaxUploadSize)
@@ -223,7 +244,7 @@ func main() {
 	authMux.Handle("/groups/", groupHandler)
 
 	// Wrap auth routes with session auth + rate limiting
-	mux.Handle("/api/", tailscaleAuth(sessionAuth(queries)(authMux)))
+	mux.Handle("/api/", sessionAuth(queries)(authMux))
 
 	// Static file serving for SPA
 	if *dev {
@@ -252,11 +273,18 @@ func main() {
 		})
 	}
 
-	// Build middleware chain: security headers -> CORS -> body limit -> mux
+	// Build middleware chain: VPN gate -> body limit -> CORS -> security headers -> mux.
+	// The gate is outermost so nothing (not even static files) is served to
+	// clients outside the WireGuard subnet.
+	gate, err := middleware.NewVPNGate(cfg.Server.VPNCIDRs, cfg.Server.TrustedProxies)
+	if err != nil {
+		log.Fatalf("Invalid VPN config: %v", err)
+	}
 	var handler http.Handler = mux
 	handler = securityHeaders(handler)
-	handler = corsMiddleware(cfg.Server.TailnetDomain)(handler)
+	handler = corsMiddleware(allowedOrigins)(handler)
 	handler = bodyLimit(10 << 20)(handler) // 10MB max request body
+	handler = gate.Middleware(handler)
 
 	// Start server
 	server := &http.Server{
@@ -300,17 +328,6 @@ func runSchema(sqlDB *sql.DB) error {
 	return err
 }
 
-// tailscaleAuth is the first auth layer: rejects requests without Tailscale-User-Login (404).
-func tailscaleAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Tailscale-User-Login") == "" {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // sessionAuth is the second auth layer: validates session token for authenticated routes.
 // Accepts token via Authorization: Bearer header (REST) or ?token query param (WebSocket).
 func sessionAuth(queries *db.Queries) func(http.Handler) http.Handler {
@@ -351,16 +368,16 @@ func sessionAuth(queries *db.Queries) func(http.Handler) http.Handler {
 	}
 }
 
-// corsMiddleware allows only origins matching *.ts.net.
-func corsMiddleware(tailnetDomain string) func(http.Handler) http.Handler {
+// corsMiddleware allows only the configured app origin (and dev origins).
+func corsMiddleware(allowed map[string]bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
-				if strings.HasSuffix(origin, "."+tailnetDomain) || origin == "http://localhost:5173" || origin == "http://localhost:3000" {
+				if allowed[origin] {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Tailscale-User-Login")
+					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 					w.Header().Set("Access-Control-Allow-Credentials", "true")
 				}
 			}
