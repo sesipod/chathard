@@ -60,7 +60,8 @@ func (h *RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	userID := uuid.New().String()
 	if err := h.queries.CreateUser(userID, req.Handle, req.PublicKeyEd25519, req.PublicKeyX25519, req.DerivedPublicKeyEd25519); err != nil {
-		http.Error(w, "Failed to create user", http.StatusInternalServerError)
+		// Handle taken (any letter case) or keys already used by another account.
+		http.Error(w, "Handle or keys already registered", http.StatusConflict)
 		return
 	}
 

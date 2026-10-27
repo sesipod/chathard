@@ -35,6 +35,7 @@ type StorageConfig struct {
 	BlobDir        string `yaml:"blob_dir"`
 	MaxBlobStorage string `yaml:"max_blob_storage"`
 	MaxUploadSize  string `yaml:"max_upload_size"`
+	MaxUserStorage string `yaml:"max_user_storage"` // per-account upload quota
 }
 
 type CleanupConfig struct {
@@ -60,6 +61,7 @@ func DefaultConfig() Config {
 			BlobDir:        "./data/blobs",
 			MaxBlobStorage: "10GB",
 			MaxUploadSize:  "100MB",
+			MaxUserStorage: "2GB",
 		},
 		Cleanup: CleanupConfig{
 			Interval: "1h",

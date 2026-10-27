@@ -46,9 +46,7 @@
     }
     checkingHandle = true;
     try {
-      const data = await api.searchUsers(handle);
-      const taken = Array.isArray(data) && data.some((u) => u.handle.toLowerCase() === handle.toLowerCase());
-      handleAvailable = !taken;
+      handleAvailable = await api.handleAvailable(handle.trim());
     } catch {
       handleAvailable = null;
     } finally {

@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
-	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/stuckpacket/tailchat/db"
@@ -57,11 +59,65 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// ── Connection hub ──
+//
+// Every socket gets its own bounded queue and writer goroutine, so a client
+// that stops reading can only hurt itself: notifications to it are dropped and
+// the connection is closed, while everyone else is unaffected.
+
+const (
+	writeWait       = 5 * time.Second
+	pongWait        = 75 * time.Second
+	pingEvery       = 30 * time.Second
+	sendQueueSize   = 64
+	maxConnsPerUser = 8
+)
+
+type wsClient struct {
+	conn *websocket.Conn
+	send chan []byte
+	once sync.Once
+}
+
+func (c *wsClient) close() {
+	c.once.Do(func() {
+		close(c.send)
+		c.conn.Close()
+	})
+}
+
+// writePump is the only goroutine that writes to the socket.
+func (c *wsClient) writePump() {
+	ping := time.NewTicker(pingEvery)
+	defer func() {
+		ping.Stop()
+		c.conn.Close()
+	}()
+	for {
+		select {
+		case msg, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, nil)
+				return
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		case <-ping.C:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
 // Hub manages WebSocket connections per user.
 type Hub struct {
-	mu          sync.RWMutex
-	connections map[string]map[*websocket.Conn]bool // userID -> set of conns
-	queries     *db.Queries                         // group membership lookups
+	mu          sync.Mutex
+	connections map[string]map[*wsClient]bool // userID -> set of clients
+	queries     *db.Queries                   // group membership lookups
 }
 
 var globalHub *Hub
@@ -69,7 +125,7 @@ var globalHub *Hub
 // InitHub creates the global WebSocket hub.
 func InitHub(queries *db.Queries) {
 	globalHub = &Hub{
-		connections: make(map[string]map[*websocket.Conn]bool),
+		connections: make(map[string]map[*wsClient]bool),
 		queries:     queries,
 	}
 }
@@ -79,24 +135,48 @@ func GetHub() *Hub {
 	return globalHub
 }
 
-// AddConnection registers a WebSocket connection for a user.
-func (h *Hub) AddConnection(userID string, conn *websocket.Conn) {
+func (h *Hub) add(userID string, c *wsClient) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.connections[userID] == nil {
-		h.connections[userID] = make(map[*websocket.Conn]bool)
+		h.connections[userID] = make(map[*wsClient]bool)
 	}
-	h.connections[userID][conn] = true
+	// Cap sockets per user: drop an arbitrary old one rather than grow without bound.
+	for len(h.connections[userID]) >= maxConnsPerUser {
+		for old := range h.connections[userID] {
+			delete(h.connections[userID], old)
+			go old.close()
+			break
+		}
+	}
+	h.connections[userID][c] = true
 }
 
-// RemoveConnection removes a WebSocket connection.
-func (h *Hub) RemoveConnection(userID string, conn *websocket.Conn) {
+func (h *Hub) remove(userID string, c *wsClient) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if conns, ok := h.connections[userID]; ok {
-		delete(conns, conn)
-		if len(conns) == 0 {
+	if set, ok := h.connections[userID]; ok {
+		delete(set, c)
+		if len(set) == 0 {
 			delete(h.connections, userID)
+		}
+	}
+	c.close()
+}
+
+func (h *Hub) sendToUser(userID string, payload WSPayload) {
+	msg, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.connections[userID] {
+		select {
+		case c.send <- msg:
+		default: // client is not keeping up: drop it, never block the hub
+			delete(h.connections[userID], c)
+			go c.close()
 		}
 	}
 }
@@ -121,6 +201,14 @@ func (h *Hub) NotifyNewMessage(msgID, senderID, recipientID, groupID string, gro
 		p := base
 		p.ConversationID = groupID
 		h.sendToUser(memberID, p)
+	}
+}
+
+// NotifyGroupChanged tells the given users that a group's roster or key changed
+// so their clients refresh it (and the admin's client rotates the key).
+func (h *Hub) NotifyGroupChanged(groupID string, userIDs ...string) {
+	for _, id := range userIDs {
+		h.sendToUser(id, WSPayload{Type: WSTypeGroupChange, GroupID: groupID, ConversationID: groupID})
 	}
 }
 
@@ -166,14 +254,6 @@ func (h *Hub) NotifyReadReceipt(fromUserID, conversationWith, groupID, upToMsgID
 	}
 }
 
-// NotifyGroupChanged tells the given users that a group's roster or key changed
-// so their clients refresh it (and the admin's client rotates the key).
-func (h *Hub) NotifyGroupChanged(groupID string, userIDs ...string) {
-	for _, id := range userIDs {
-		h.sendToUser(id, WSPayload{Type: WSTypeGroupChange, GroupID: groupID, ConversationID: groupID})
-	}
-}
-
 func (h *Hub) sendToGroup(groupID, exceptUserID string, payload WSPayload) {
 	ids, err := h.queries.GetGroupMemberIDs(groupID)
 	if err != nil {
@@ -186,21 +266,60 @@ func (h *Hub) sendToGroup(groupID, exceptUserID string, payload WSPayload) {
 	}
 }
 
-func (h *Hub) sendToUser(userID string, payload WSPayload) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if conns, ok := h.connections[userID]; ok {
-		for conn := range conns {
-			if err := conn.WriteJSON(payload); err != nil {
-				log.Printf("ws: write to %s: %v", userID, err)
-				conn.Close()
-				delete(conns, conn)
-			}
-		}
-	}
+// ── One-time connection tickets ──
+//
+// Browsers cannot set headers on a WebSocket, and putting the long-lived
+// session token in the URL would leak it into proxy/access logs. Instead the
+// client asks (with its Bearer token) for a ticket that works once, for a few
+// seconds, only on /ws.
+
+const ticketTTL = 30 * time.Second
+
+type ticketStore struct {
+	mu      sync.Mutex
+	tickets map[string]ticketEntry
 }
 
-// WSHandler handles GET /ws.
+type ticketEntry struct {
+	userID  string
+	expires time.Time
+}
+
+var wsTickets = &ticketStore{tickets: map[string]ticketEntry{}}
+
+// IssueWSTicket returns a single-use ticket for userID.
+func IssueWSTicket(userID string) string {
+	b := make([]byte, 24)
+	rand.Read(b)
+	t := hex.EncodeToString(b)
+	wsTickets.mu.Lock()
+	defer wsTickets.mu.Unlock()
+	now := time.Now()
+	for k, v := range wsTickets.tickets { // opportunistic cleanup keeps the map small
+		if now.After(v.expires) {
+			delete(wsTickets.tickets, k)
+		}
+	}
+	if len(wsTickets.tickets) > 10000 {
+		return ""
+	}
+	wsTickets.tickets[t] = ticketEntry{userID: userID, expires: now.Add(ticketTTL)}
+	return t
+}
+
+// RedeemWSTicket consumes a ticket and returns its user, or "".
+func RedeemWSTicket(t string) string {
+	wsTickets.mu.Lock()
+	defer wsTickets.mu.Unlock()
+	e, ok := wsTickets.tickets[t]
+	delete(wsTickets.tickets, t)
+	if !ok || time.Now().After(e.expires) {
+		return ""
+	}
+	return e.userID
+}
+
+// WSHandler handles GET /ws?ticket=…
 type WSHandler struct{}
 
 // NewWSHandler creates a new WSHandler.
@@ -209,49 +328,48 @@ func NewWSHandler() *WSHandler {
 }
 
 func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	userID, ok := r.Context().Value(CtxKeyUserID).(string)
-	if !ok || userID == "" {
+	userID := RedeemWSTicket(r.URL.Query().Get("ticket"))
+	if userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("ws: upgrade: %v", err)
 		return
 	}
-
 	hub := GetHub()
 	if hub == nil {
 		conn.Close()
 		return
 	}
 
+	client := &wsClient{conn: conn, send: make(chan []byte, sendQueueSize)}
 	conn.SetReadLimit(4 << 10)
-	hub.AddConnection(userID, conn)
-	defer hub.RemoveConnection(userID, conn)
+	conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+	hub.add(userID, client)
+	go client.writePump()
+	defer hub.remove(userID, client)
 
-	log.Printf("ws: user %s connected", userID)
-
-	// Read loop — handle incoming messages (typing indicators, etc.)
 	for {
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
-			break
+			return
 		}
+		conn.SetReadDeadline(time.Now().Add(pongWait))
 
 		var payload WSPayload
 		if err := json.Unmarshal(msgBytes, &payload); err != nil {
 			continue
 		}
-
-		switch payload.Type {
-		case WSTypeTyping:
+		if payload.Type == WSTypeTyping {
 			hub.NotifyTyping(userID, payload.ConversationID, payload.IsGroup, payload.IsTyping != nil && *payload.IsTyping)
 		}
 		// Read receipts are only sent by the REST endpoint, never accepted
 		// from a socket, so a client cannot forge them for other people.
 	}
-
-	log.Printf("ws: user %s disconnected", userID)
 }

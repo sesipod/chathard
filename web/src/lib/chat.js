@@ -64,6 +64,17 @@ export async function loadGroup(groupId, force = false) {
     }
   }
 
+  // A server that wants a removed member to keep reading could claim the group is
+  // still on an old key generation. Remember the newest epoch we have ever seen
+  // and refuse to go backwards. (It cannot stop a server hiding a NEW epoch from
+  // us entirely; see "Known limits" in the README.)
+  const seenKey = `tailchat-epoch-${groupId}`;
+  const seen = Number(localStorage.getItem(seenKey) || 0);
+  if (group.epoch < seen) {
+    throw new Error('The server offered an older group key than you have already seen. Not sending — possible tampering.');
+  }
+  localStorage.setItem(seenKey, String(Math.max(seen, group.epoch)));
+
   const state = { group, keys, members: data.members, name: 'Group', untrusted };
   state.name = await decryptGroupName(group, keys);
   groups.set(groupId, state);
@@ -125,10 +136,12 @@ export async function addGroupMember(groupId, user) {
 }
 
 /** Admin: drop `removeUserId` (optional) and issue a fresh key to everyone who remains. */
-export async function rotateGroupKey(groupId, removeUserId = '') {
+export async function rotateGroupKey(groupId, removeUserId = '', { onlyIfNeeded = false } = {}) {
   const me = await identity();
   const state = await loadGroup(groupId, true);
   if (state.group.created_by !== myId()) throw new Error('Only the group admin can change members');
+  // Called from a possibly stale conversation list: if someone already rotated, do nothing.
+  if (onlyIfNeeded && !state.group.needs_rotation) return;
   const remaining = state.members.filter((m) => m.id !== removeUserId);
   const roster = await getUsers(remaining.map((m) => m.id));
   const epoch = state.group.epoch + 1;
@@ -157,7 +170,9 @@ async function sendBody(conv, body, expiresIn) {
   const meId = myId();
 
   if (conv.type === 'group') {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // The admin's browser may be rotating the key right now; refresh and retry a few times.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 250 * attempt));
       const state = await loadGroup(conv.id, attempt > 0);
       const key = state.keys.get(state.group.epoch);
       if (!key) throw new Error('You do not have the current group key yet');
@@ -167,7 +182,7 @@ async function sendBody(conv, body, expiresIn) {
       try {
         return await api.sendMessage({ groupId: conv.id, ciphertext, nonce, expiresIn });
       } catch (err) {
-        if (attempt === 0 && /epoch/i.test(err.message)) continue; // key rotated; refresh and retry
+        if (attempt < 3 && /epoch/i.test(err.message)) continue; // key rotated; refresh and retry
         throw err;
       }
     }

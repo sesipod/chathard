@@ -116,7 +116,7 @@
       if (c.type === 'group' && c.needs_rotation && c.created_by === me && !rotating.has(c.id)) {
         rotating.add(c.id);
         try {
-          await rotateGroupKey(c.id);
+          await rotateGroupKey(c.id, '', { onlyIfNeeded: true });
           await chatStore.loadConversations();
         } catch (e) {
           console.warn('group key rotation failed:', e.message);
@@ -258,9 +258,10 @@
       if (result && result.id) {
         chatStore.messages.update((m) => ({
           ...m,
-          [convId]: (m[convId] || []).map((msg) =>
-            msg.id === optimisticId ? { ...msg, id: result.id, is_own: true, content: text } : msg,
-          ),
+          [convId]: (m[convId] || [])
+            .map((msg) => (msg.id === optimisticId ? { ...msg, id: result.id, is_own: true, content: text } : msg))
+            // the server copy may already have arrived over the WebSocket: keep one
+            .filter((msg, i, all) => all.findIndex((x) => x.id === msg.id) === i),
         }));
       }
     } catch (err) {

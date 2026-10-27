@@ -14,6 +14,7 @@ async function newUser(handle) {
   const ctx = await browser.newContext({ baseURL: BASE });
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.log(`  [${handle}] pageerror:`, e.message));
+  page.on('response', async (r) => { if (r.status() >= 400 && r.status() !== 401 && r.status() !== 404) console.log(`  [${handle}] HTTP ${r.status()} ${r.request().method()} ${new URL(r.url()).pathname} -> ${(await r.text().catch(() => '')).trim().slice(0, 80)}`); });
   page.on('console', (m) => { if (m.type() === 'error') console.log(`  [${handle}] console.error:`, m.text()); });
   return { ctx, page, handle };
 }
@@ -152,7 +153,7 @@ ok('group: carol -> alice');
 
 console.log('\n== Member leaves: admin rotates the group key, leaver is locked out ==');
 const { DatabaseSync: DB2 } = await import('node:sqlite');
-const peek = (sql) => { const d = new DB2(DIR + '/data/t.db', { readOnly: true }); const r = d.prepare(sql).all(); d.close(); return r; };
+const peek = (sql) => { const d = new DB2(DIR + '/data/t.db', { readOnly: true }); d.exec('PRAGMA busy_timeout=5000'); try { return d.prepare(sql).all(); } finally { d.close(); } };
 await carol.page.reload();
 await carol.page.locator('.chat-name', { hasText: 'Top Secret Crew' }).first().click();
 await carol.page.getByLabel('More options').click();
@@ -180,10 +181,68 @@ assert.equal(carolCanFetch, 404);
 ok('carol no longer sees the group and the server refuses her the ciphertext');
 secretsExtra.push(POST);
 
+console.log('\n== Hardening checks (raw HTTP / WebSocket) ==');
+const token = await alice.page.evaluate(() => sessionStorage.getItem('tailchat-token'));
+const get = (path, init = {}) => fetch(BASE + path, init);
+{
+  const r = await get('/');
+  const csp = r.headers.get('content-security-policy') || '';
+  assert.match(csp, /script-src 'self'/); assert.match(csp, /default-src 'none'/); assert.match(csp, /frame-ancestors 'none'/);
+  assert.ok(!/unsafe-inline[^;]*script|script-src[^;]*unsafe/.test(csp), 'scripts must not be allowed inline');
+  assert.equal((await get('/api/health')).headers.get('cache-control'), 'no-store');
+  ok('CSP forbids inline/third-party scripts; API responses are no-store');
+}
+assert.equal((await get('/api/users/search?handle=ali')).status, 401);
+assert.equal((await get('/api/users/search?handle=ali', { headers: { Authorization: 'Bearer ' + token } })).status, 200);
+assert.deepEqual(await (await get('/api/users/search?handle=%25%25%25', { headers: { Authorization: 'Bearer ' + token } })).json(), []);
+ok('user search needs a login, and wildcards cannot list everyone');
+assert.equal((await (await get('/api/handle-available?handle=ALICE')).json()).available, false);
+assert.equal((await (await get('/api/handle-available?handle=someone-new')).json()).available, true);
+ok('handle check is case-insensitive (no "Alice" vs "alice" lookalikes)');
+{
+  const real = await (await get('/api/auth/challenge', { method: 'POST', body: '{"handle":"alice"}' })).status;
+  const fake = await (await get('/api/auth/challenge', { method: 'POST', body: '{"handle":"does-not-exist"}' })).status;
+  assert.equal(real, 200); assert.equal(fake, 200);
+  ok('sign-in challenge looks identical for real and unknown handles');
+}
+assert.equal((await get('/api/me?token=' + token)).status, 401);
+ok('session token in a URL is rejected (header only)');
+{
+  const { request } = await import('node:http');
+  const status = await new Promise((res, rej) => {
+    const q = request({ host: '127.0.0.1', port: 3100, path: '/api/health', headers: { Host: 'evil.example' } }, (r) => { r.resume(); res(r.statusCode); });
+    q.on('error', rej); q.end();
+  });
+  assert.equal(status, 404);
+  ok('DNS-rebinding style Host header is refused');
+}
+{
+  const body = await (await get('/assets/')).text();
+  assert.match(body, /<div id="app">/); assert.ok(!/<a href="index-/.test(body));
+  ok('static directories are not listable');
+}
+{
+  const out = await alice.page.evaluate(async (tok) => {
+    const open = (url) => new Promise((res) => { const w = new WebSocket(url); w.onopen = () => res('open'); w.onerror = () => res('refused'); w.onclose = () => res('refused'); });
+    const base = `ws://${location.host}/ws`;
+    const viaToken = await open(`${base}?token=${tok}`);
+    const t = (await (await fetch('/api/ws-ticket', { method: 'POST', headers: { Authorization: 'Bearer ' + tok } })).json()).ticket;
+    const first = await open(`${base}?ticket=${t}`);
+    const reuse = await open(`${base}?ticket=${t}`);
+    const none = await open(base);
+    const noAuth = (await fetch('/api/ws-ticket', { method: 'POST' })).status;
+    return { viaToken, first, reuse, none, noAuth };
+  }, token);
+  assert.deepEqual(out, { viaToken: 'refused', first: 'open', reuse: 'refused', none: 'refused', noAuth: 401 });
+  ok('WebSocket: session token refused, one-time ticket works exactly once');
+}
+
 console.log('\n== Malicious server swaps a contact\'s key ==');
 const { DatabaseSync } = await import('node:sqlite');
-const dbh = new DatabaseSync(DIR + '/data/t.db');
+const dbh = new DatabaseSync(DIR + '/data/t.db'); dbh.exec('PRAGMA busy_timeout=5000');
 const carolRow = dbh.prepare("select public_key_ed25519 e, public_key_x25519 x from users where handle='carol'").get();
+// an attacker with database access is not bound by the app's unique-key rule: free carol's keys, give them to bobby
+dbh.prepare("update users set public_key_ed25519=randomblob(32), public_key_x25519=randomblob(32) where handle='carol'").run();
 dbh.prepare("update users set public_key_ed25519=?, public_key_x25519=? where handle='bobby'").run(carolRow.e, carolRow.x);
 dbh.close();
 await alice.page.reload();

@@ -86,8 +86,14 @@ async function loadMessagesWithType(convId, isGroup) {
     const rows = isGroup ? await api.fetchGroupMessages(convId) : await api.fetchMessages({ withUserId: convId });
     // Everything below happens in this browser: the server only had ciphertext.
     msgs = await openMessages(rows, isGroup ? { type: 'group', id: convId } : { type: 'direct', id: convId, user_id: convId });
-    msgs.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-    messages.update((m) => ({ ...m, [convId]: msgs }));
+    // Keep messages that are still being sent (or failed) — a refresh must not erase them.
+    messages.update((m) => {
+      const pending = (m[convId] || []).filter((x) => String(x.id).startsWith('opt-'));
+      const all = [...msgs, ...pending];
+      all.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+      msgs = all;
+      return { ...m, [convId]: all };
+    });
     const last = msgs[msgs.length - 1];
     if (last) {
       conversations.update((list) =>

@@ -16,10 +16,14 @@ import (
 // FilesHandler stores and serves opaque encrypted blobs. File names, types and
 // keys never reach the server: they travel inside the encrypted chat message.
 type FilesHandler struct {
-	queries *db.Queries
-	store   *storage.BlobStore
-	maxSize int64
+	queries   *db.Queries
+	store     *storage.BlobStore
+	maxSize   int64
+	userQuota int64 // bytes of uploads one user may keep; 0 = unlimited
 }
+
+// SetUserQuota limits how much one account can store, so a single user cannot fill the disk.
+func (h *FilesHandler) SetUserQuota(bytes int64) { h.userQuota = bytes }
 
 // NewFilesHandler creates a new FilesHandler.
 func NewFilesHandler(queries *db.Queries, store *storage.BlobStore, maxSize int64) *FilesHandler {
@@ -86,6 +90,13 @@ func (h *FilesHandler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil || int64(len(data)) > h.maxSize || len(data) == 0 {
 		http.Error(w, "Failed to read file", http.StatusBadRequest)
 		return
+	}
+
+	if h.userQuota > 0 {
+		if used, err := h.queries.UserFileBytes(userID); err != nil || used+int64(len(data)) > h.userQuota {
+			http.Error(w, "Storage quota exceeded", http.StatusRequestEntityTooLarge)
+			return
+		}
 	}
 
 	targetID := r.FormValue("target_id")

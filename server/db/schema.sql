@@ -7,10 +7,10 @@
 
 CREATE TABLE IF NOT EXISTS users (
     id                          TEXT PRIMARY KEY,
-    handle                      TEXT NOT NULL UNIQUE,
-    public_key_ed25519          BLOB NOT NULL,   -- identity key (signs messages)
+    handle                      TEXT NOT NULL UNIQUE COLLATE NOCASE,  -- "Alice" and "alice" are the same person
+    public_key_ed25519          BLOB NOT NULL UNIQUE,   -- identity key (signs messages); no two accounts may share keys
     public_key_x25519           BLOB NOT NULL,   -- encryption key (derived from the identity key)
-    derived_public_key_ed25519  BLOB NOT NULL,   -- login key (challenge-response only)
+    derived_public_key_ed25519  BLOB NOT NULL UNIQUE,   -- login key (challenge-response only)
     created_at                  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

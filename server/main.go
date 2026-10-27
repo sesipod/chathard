@@ -9,10 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
-	"strconv"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -83,6 +85,12 @@ func main() {
 		allowedOrigins["http://localhost:3000"] = true
 	}
 	handlers.SetAllowedOrigins(allowedOrigins)
+	allowedHosts := map[string]bool{strings.ToLower(cfg.Server.Domain): true}
+	for o := range allowedOrigins {
+		if u, err := url.Parse(o); err == nil {
+			allowedHosts[strings.ToLower(u.Hostname())] = true
+		}
+	}
 
 	// Open database
 	sqlDB, err := sql.Open("sqlite", cfg.Storage.DBPath+"?_journal_mode=WAL&_busy_timeout=5000")
@@ -161,25 +169,38 @@ func main() {
 	authHandler := handlers.NewAuthHandler(queries)
 	mux.Handle("/api/auth/", rl.Middleware("auth", rl.Cfg().Messages)(authHandler))
 
-	// User search (VPN gate + rate limit, no session required — used during registration)
-	mux.Handle("/api/users/search", rl.Middleware("search", rl.Cfg().UserSearch)(
+	// Handle availability: the only unauthenticated lookup, answers yes/no for ONE
+	// exact handle so sign-up can say "taken" without exposing the user list.
+	mux.Handle("/api/handle-available", rl.Middleware("search", rl.Cfg().UserSearch)(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			query := r.URL.Query().Get("handle")
+			h := strings.TrimSpace(r.URL.Query().Get("handle"))
+			_, err := queries.GetUserByHandle(h)
+			taken := err == nil || err != sql.ErrNoRows // on any unexpected error, say "taken"
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]bool{"available": !taken})
+		}),
+	))
+
+	// Authenticated routes
+	authMux := http.NewServeMux()
+
+	// User search: signed-in users only, prefix match, LIKE wildcards escaped.
+	authMux.Handle("/api/users/search", rl.Middleware("search", rl.Cfg().UserSearch)(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			query := strings.TrimSpace(r.URL.Query().Get("handle"))
 			if len(query) < 3 {
 				http.Error(w, "Query too short", http.StatusBadRequest)
 				return
 			}
-			limit := 20
-			if l := r.URL.Query().Get("limit"); l != "" {
-				if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 50 {
-					limit = n
-				}
-			}
-			users, err := queries.SearchUsers(query, limit)
+			users, err := queries.SearchUsers(query, 20)
 			if err != nil {
 				http.Error(w, "Search failed", http.StatusInternalServerError)
 				return
@@ -192,8 +213,20 @@ func main() {
 		}),
 	))
 
-	// Authenticated routes
-	authMux := http.NewServeMux()
+	// POST /api/ws-ticket — one-time ticket for opening the WebSocket.
+	authMux.HandleFunc("/api/ws-ticket", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		t := handlers.IssueWSTicket(r.Context().Value(handlers.CtxKeyUserID).(string))
+		if t == "" {
+			http.Error(w, "Busy, try again", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"ticket": t})
+	})
 
 	// GET /api/me
 	authMux.HandleFunc("/api/me", func(w http.ResponseWriter, r *http.Request) {
@@ -245,14 +278,14 @@ func main() {
 
 	// WebSocket
 	wsHandler := handlers.NewWSHandler()
-	authMux.Handle("/api/ws", wsHandler)
-	authMux.Handle("/ws", wsHandler)
-	// Also handle /ws directly (spec says GET /ws)
-	mux.Handle("/ws", sessionAuth(queries)(wsHandler))
+	// Authenticated by a one-time ticket inside the handler (see /api/ws-ticket).
+	mux.Handle("/ws", wsHandler)
 
 	// Files
 	maxUpload := parseSize(cfg.Storage.MaxUploadSize)
 	fileHandler := handlers.NewFilesHandler(queries, blobStore, maxUpload)
+	fileHandler.SetUserQuota(parseSize(cfg.Storage.MaxUserStorage))
+	authMux.Handle("/api/files/upload", rl.Middleware("upload", rl.Cfg().Upload)(fileHandler))
 	authMux.Handle("/api/files/", fileHandler)
 	authMux.Handle("/files/", fileHandler)
 	authMux.HandleFunc("GET /api/conversations/{id}/files", fileHandler.GetConversationFiles)
@@ -265,7 +298,8 @@ func main() {
 	authMux.Handle("/groups/", groupHandler)
 
 	// Wrap auth routes with session auth + rate limiting
-	mux.Handle("/api/", sessionAuth(queries)(authMux))
+	// Throttle before authentication so token guessing and floods are limited too.
+	mux.Handle("/api/", rl.Middleware("api", rl.Cfg().API)(sessionAuth(queries)(authMux)))
 
 	// Static file serving for SPA
 	if *dev {
@@ -285,8 +319,8 @@ func main() {
 				return
 			}
 			path := "web/dist" + r.URL.Path
-			if _, err := os.Stat(path); os.IsNotExist(err) {
-				// SPA fallback: serve index.html
+			if st, err := os.Stat(path); err != nil || st.IsDir() {
+				// SPA fallback: serve index.html (never a directory listing)
 				http.ServeFile(w, r, "web/dist/index.html")
 				return
 			}
@@ -302,9 +336,10 @@ func main() {
 		log.Fatalf("Invalid VPN config: %v", err)
 	}
 	var handler http.Handler = mux
-	handler = securityHeaders(handler)
+	handler = securityHeaders(allowedOrigins)(handler)
 	handler = corsMiddleware(allowedOrigins)(handler)
 	handler = bodyLimit(10<<20, parseSize(cfg.Storage.MaxUploadSize)+(2<<20))(handler)
+	handler = hostGuard(allowedHosts)(handler)
 	handler = gate.Middleware(handler)
 
 	// Start server
@@ -350,19 +385,17 @@ func runSchema(sqlDB *sql.DB) error {
 }
 
 // sessionAuth is the second auth layer: validates session token for authenticated routes.
-// Accepts token via Authorization: Bearer header (REST) or ?token query param (WebSocket).
+// Accepts the token via the Authorization: Bearer header only.
 func sessionAuth(queries *db.Queries) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Tokens are accepted ONLY in the Authorization header, never in a URL
+			// (URLs end up in logs and referrers). WebSockets use one-time tickets.
 			authHeader := r.Header.Get("Authorization")
 			var token string
-
-			// Try Authorization header first, then ?token query param (for WebSocket)
 			const bearer = "Bearer "
 			if strings.HasPrefix(authHeader, bearer) {
 				token = authHeader[len(bearer):]
-			} else if tok := r.URL.Query().Get("token"); tok != "" {
-				token = tok
 			}
 
 			if token == "" {
@@ -411,14 +444,71 @@ func corsMiddleware(allowed map[string]bool) func(http.Handler) http.Handler {
 	}
 }
 
-// securityHeaders adds security-related HTTP headers.
-func securityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		next.ServeHTTP(w, r)
-	})
+// securityHeaders sets browser protections. The Content-Security-Policy is the
+// main defence for the account key: it stops injected or third-party script
+// from running on the page, and stops any data being sent to other origins.
+func securityHeaders(origins map[string]bool) func(http.Handler) http.Handler {
+	connect := []string{"'self'"}
+	for o := range origins {
+		switch {
+		case strings.HasPrefix(o, "https://"):
+			connect = append(connect, "wss://"+strings.TrimPrefix(o, "https://"))
+		case strings.HasPrefix(o, "http://"):
+			connect = append(connect, "ws://"+strings.TrimPrefix(o, "http://"))
+		}
+	}
+	sort.Strings(connect[1:])
+	csp := strings.Join([]string{
+		"default-src 'none'",
+		"script-src 'self'",
+		"style-src 'self' 'unsafe-inline'", // Svelte components use inline style attributes
+		"img-src 'self' blob: data:",
+		"font-src 'self'",
+		"connect-src " + strings.Join(connect, " "),
+		"manifest-src 'self'",
+		"worker-src 'self'",
+		"base-uri 'none'",
+		"form-action 'self'",
+		"frame-ancestors 'none'",
+		"object-src 'none'",
+	}, "; ")
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("Content-Security-Policy", csp)
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Referrer-Policy", "no-referrer")
+			h.Set("Permissions-Policy", "camera=(self), microphone=(), geolocation=(), payment=()")
+			h.Set("Cross-Origin-Opener-Policy", "same-origin")
+			h.Set("Cross-Origin-Resource-Policy", "same-origin")
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				// Ciphertext, key envelopes and user lists must never sit in a cache.
+				h.Set("Cache-Control", "no-store")
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// hostGuard blocks DNS-rebinding: a page on some other domain that is
+// re-pointed at this server's VPN address would arrive with that other
+// domain in the Host header. Only the configured domain (or a bare IP) passes.
+func hostGuard(allowed map[string]bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			host := r.Host
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
+			}
+			host = strings.Trim(strings.ToLower(host), "[]")
+			if net.ParseIP(host) == nil && !allowed[host] {
+				http.Error(w, "Not Found", http.StatusNotFound)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // bodyLimit restricts request bodies: maxBytes everywhere except file uploads,

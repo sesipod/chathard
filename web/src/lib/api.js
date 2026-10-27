@@ -172,6 +172,13 @@ const api = {
   },
 
   // ── Users ──
+  /** Public yes/no for one exact handle (used at sign-up). */
+  async handleAvailable(handle) {
+    const res = await fetch(`/api/handle-available?handle=${encodeURIComponent(handle)}`, { headers: headers(false) });
+    await throwIfNotOk(res);
+    return (await res.json()).available === true;
+  },
+
   async searchUsers(handle) {
     const res = await fetch(`/api/users/search?handle=${encodeURIComponent(handle)}`, {
       headers: headers(),
@@ -341,14 +348,33 @@ const api = {
    */
   connectWebSocket(token, { onMessage, onOpen, onClose } = {}, { maxRetries = 10, baseDelay = 1000 } = {}) {
     const wsPrefix = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${wsPrefix}://${location.host}/ws?token=${encodeURIComponent(token)}`;
     let ws = null;
     let retries = 0;
     let closed = false;
     let everOpened = false;
 
-    const open = () => {
-      ws = new WebSocket(url);
+    const retry = () => {
+      if (closed || retries >= maxRetries) return;
+      const delay = Math.min(baseDelay * Math.pow(2, retries), 30000);
+      retries++;
+      setTimeout(open, delay);
+    };
+
+    const open = async () => {
+      // The long-lived session token is never put in a URL: swap it for a
+      // one-time ticket that is only good for opening this socket.
+      let ticket;
+      try {
+        const res = await fetch('/api/ws-ticket', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+        if (res.status === 401) return; // session ended; the app will send the user to sign in
+        if (!res.ok) throw new Error('ticket');
+        ticket = (await res.json()).ticket;
+      } catch {
+        onClose?.();
+        return retry();
+      }
+      if (closed) return;
+      ws = new WebSocket(`${wsPrefix}://${location.host}/ws?ticket=${encodeURIComponent(ticket)}`);
       ws.addEventListener('open', () => {
         const reconnect = everOpened;
         everOpened = true;
@@ -358,10 +384,7 @@ const api = {
       ws.addEventListener('message', (ev) => onMessage?.(ev));
       ws.addEventListener('close', () => {
         onClose?.();
-        if (closed || retries >= maxRetries) return;
-        const delay = Math.min(baseDelay * Math.pow(2, retries), 30000);
-        retries++;
-        setTimeout(open, delay);
+        retry();
       });
     };
     open();

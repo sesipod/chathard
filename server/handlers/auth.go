@@ -81,10 +81,13 @@ func (h *AuthHandler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Unknown handles get a normal-looking challenge (for a throwaway key) so this
+	// endpoint cannot be used to find out who has an account.
 	user, err := h.queries.GetUserByHandle(req.Handle)
 	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
-		return
+		fake := make([]byte, 32)
+		rand.Read(fake)
+		user = &db.UserRow{ID: "", DerivedPublicKeyEd25519: fake}
 	}
 
 	challenge := make([]byte, 32)
@@ -134,7 +137,7 @@ func (h *AuthHandler) handleVerify(w http.ResponseWriter, r *http.Request) {
 	delete(h.challenges, req.Challenge)
 	h.mu.Unlock()
 
-	if !ok || time.Now().After(entry.ExpiresAt) {
+	if !ok || entry.UserID == "" || time.Now().After(entry.ExpiresAt) {
 		http.Error(w, "Invalid or expired challenge", http.StatusUnauthorized)
 		return
 	}

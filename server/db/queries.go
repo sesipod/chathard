@@ -36,8 +36,12 @@ func (q *Queries) GetUserByID(id string) (*UserRow, error) {
 	return scanUser(row)
 }
 
+// SearchUsers finds handles that START WITH query (case-insensitive). The
+// query is treated as literal text: LIKE wildcards in it are escaped, so "%%%"
+// cannot be used to list everyone.
 func (q *Queries) SearchUsers(query string, limit int) ([]UserRow, error) {
-	rows, err := q.db.Query(`SELECT id, handle, public_key_ed25519, public_key_x25519, derived_public_key_ed25519, created_at FROM users WHERE handle LIKE ? LIMIT ?`, "%"+query+"%", limit)
+	esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
+	rows, err := q.db.Query(`SELECT id, handle, public_key_ed25519, public_key_x25519, derived_public_key_ed25519, created_at FROM users WHERE handle LIKE ? ESCAPE '\' ORDER BY handle LIMIT ?`, esc+"%", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -181,18 +185,19 @@ func (q *Queries) GetMessages(recipientID, groupID string, after, before *time.T
 	return msgs, rows.Err()
 }
 
+// MarkConversationRead marks messages the OTHER person sent to userID as read.
+// (Your own outgoing messages are only "read" when the recipient reads them.)
 func (q *Queries) MarkConversationRead(userID, conversationWith string, upToMsgID string) error {
 	if upToMsgID == "" {
-		// Mark ALL messages from this conversation partner as read
 		_, err := q.db.Exec(
-			`UPDATE messages SET read_at = datetime('now') WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)) AND read_at IS NULL`,
-			conversationWith, userID, userID, conversationWith,
+			`UPDATE messages SET read_at = datetime('now') WHERE sender_id = ? AND recipient_id = ? AND read_at IS NULL`,
+			conversationWith, userID,
 		)
 		return err
 	}
 	_, err := q.db.Exec(
-		`UPDATE messages SET read_at = datetime('now') WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)) AND id <= ? AND read_at IS NULL`,
-		conversationWith, userID, userID, conversationWith, upToMsgID,
+		`UPDATE messages SET read_at = datetime('now') WHERE sender_id = ? AND recipient_id = ? AND created_at <= (SELECT created_at FROM messages WHERE id = ?) AND read_at IS NULL`,
+		conversationWith, userID, upToMsgID,
 	)
 	return err
 }
@@ -584,6 +589,13 @@ func (q *Queries) InsertFile(id, uploaderID, encryptedBlobPath string, sizeBytes
 // GetConversationFiles lists blob records for one conversation. For a 1:1 chat
 // that is files I sent them plus files they sent me; for a group, every file
 // addressed to the group.
+// UserFileBytes is the total size of blobs a user has uploaded (for quotas).
+func (q *Queries) UserFileBytes(userID string) (int64, error) {
+	var n int64
+	err := q.db.QueryRow(`SELECT COALESCE(SUM(size_bytes), 0) FROM files WHERE uploader_id = ?`, userID).Scan(&n)
+	return n, err
+}
+
 func (q *Queries) GetConversationFiles(userID, targetID, targetType string) ([]FileRow, error) {
 	const cols = `id, uploader_id, size_bytes, created_at, expires_at, COALESCE(target_id, ''), COALESCE(target_type, ''), COALESCE(message_id, '')`
 	var rows *sql.Rows

@@ -94,13 +94,27 @@ The automated browser test searches the whole database, write-ahead log, blob di
 | Swap a contact's public key | First-seen keys are **pinned**; a later change blocks messaging with a red warning. To rule out a swap at *first contact*, compare the **safety number** (chat menu → *Verify security*) in person or on a call |
 | Read a removed member's future messages | Admin's browser issues a new group key (new epoch) for the remaining members |
 
+### Browser and server hardening
+
+- **Content-Security-Policy** (`default-src 'none'`, scripts from `self` only) so injected or third-party script cannot run and steal the account key; plus `no-store` on every API response, `frame-ancestors 'none'`, COOP/CORP, no referrer.
+- **DNS-rebinding guard**: requests whose `Host` is not the configured domain (or a bare IP) are refused.
+- **Session tokens are header-only.** WebSockets use **one-time, 30-second tickets**, so no long-lived secret ever appears in a URL or log.
+- **Handles are case-insensitive-unique** (`Alice` ≠ `alice` impersonation is impossible); two accounts cannot share identity keys.
+- **User search needs a login**, matches by prefix and escapes wildcards; sign-up uses a separate yes/no handle check; sign-in challenges look the same for real and unknown handles (no account enumeration).
+- **Per-connection WebSocket queues, write deadlines, keep-alive and a per-user cap**, so one stuck or hostile client cannot freeze the server for everyone.
+- **Rate limits** on every authenticated request and on uploads; a **per-account upload quota** (default 2 GB) stops one user filling the disk.
+- Read receipts only cover messages actually addressed to you; static directories are never listed.
+
 ### Known limits (read these)
 
 - **The server serves the app's JavaScript.** A malicious server operator could ship a modified web app that leaks keys to them. End-to-end encryption in a web app can never fully remove this; it protects against stolen data, database access, backups and passive snooping, but not against an operator who actively replaces the code. Mitigations: keep the server patched, restrict who has admin access, and consider shipping the app as a separately signed package later.
-- **No forward secrecy.** A stolen account key decrypts that person's past and future messages. Rotating per-message ratchets (Signal's double ratchet) is not implemented.
-- **Metadata is visible** (see above).
+- **No forward secrecy.** A stolen account key decrypts that person's past and future messages. There is also **no way to revoke or rotate an account key**: if a device with *Remember this device* is stolen, the account must be abandoned. Only enable it on devices you own and lock.
+- **A hostile server can censor.** It cannot read or forge messages, but it can delete or delay them, withhold a group key rotation (letting a removed member keep a stale key), or show wrong timestamps. The app refuses to *go back* to an older group key than it has seen, but cannot detect a rotation it was never told about.
+- **Metadata is visible** (who talks to whom, when, group membership).
 - **Anyone who gets your account key *is* you.**
-- Handles are plaintext and searchable by anyone on the VPN.
+- Handles are plaintext, and anyone signed in can search them. Any signed-in user can add you to a group without asking.
+- **A sender's auto-delete timer also removes their messages from the recipient's view** (by design, like disappearing messages).
+- **Operational secrets:** the Cloudflare token in `.env` can change your DNS (scope it to a single zone, ideally a dedicated one). A WireGuard QR code contains that person's private VPN key: send it over a channel you trust, prefer wg-easy's one-time links, and delete the client when someone leaves.
 
 ### Rate Limiting
 
@@ -108,7 +122,9 @@ The automated browser test searches the whole database, write-ahead log, blob di
 |----------|-------|
 | Registration | 3 per hour per IP |
 | Messages / sign-in | 60 per minute per IP |
-| User search | 30 per minute per IP |
+| User search / handle check | 30 per minute per IP |
+| All authenticated requests | 900 per minute per IP |
+| File uploads | 30 per minute per IP, 2 GB per account |
 
 ---
 

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stuckpacket/tailchat/db"
@@ -47,10 +48,11 @@ func newEnv(t *testing.T) *env {
 	}
 	InitHub(q)
 	e := &env{q: q, groups: NewGroupsHandler(q), msgs: NewMessagesHandler(q), files: NewFilesHandler(q, store, 1<<20), users: map[string]string{}}
-	for _, name := range []string{"alice", "bob", "carol", "mallory"} {
+	for i, name := range []string{"alice", "bob", "carol", "mallory"} {
 		id := uuid.New().String()
-		k := bytes.Repeat([]byte{1}, 32)
-		if err := q.CreateUser(id, name, k, k, k); err != nil {
+		ed := bytes.Repeat([]byte{byte(0x20 + i)}, 32)
+		auth := bytes.Repeat([]byte{byte(0x40 + i)}, 32)
+		if err := q.CreateUser(id, name, ed, ed, auth); err != nil {
 			t.Fatal(err)
 		}
 		e.users[name] = id
@@ -295,6 +297,19 @@ func TestRegisterValidation(t *testing.T) {
 	if c := post("dave", k); c != 409 {
 		t.Errorf("duplicate = %d, want 409", c)
 	}
+	k2 := bytes.Repeat([]byte{6}, 32)
+	post2 := func(handle string, ed, auth []byte) int {
+		b, _ := json.Marshal(map[string]interface{}{"handle": handle, "public_key_ed25519": ed, "public_key_x25519": k2, "derived_public_key_ed25519": auth})
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("POST", "/api/register", bytes.NewReader(b)))
+		return w.Code
+	}
+	if c := post2("DAVE", k2, k2); c != 409 {
+		t.Errorf("same handle in other letter case = %d, want 409 (impersonation)", c)
+	}
+	if c := post2("dave2", k, bytes.Repeat([]byte{8}, 32)); c != 409 {
+		t.Errorf("reusing another account's identity key = %d, want 409", c)
+	}
 	if c := post("x", k); c != 400 {
 		t.Errorf("short handle = %d, want 400", c)
 	}
@@ -303,5 +318,78 @@ func TestRegisterValidation(t *testing.T) {
 	}
 	if c := post("erin", k[:10]); c != 400 {
 		t.Errorf("short key = %d, want 400", c)
+	}
+}
+
+func TestSearchIsLiteralPrefixAndWildcardsEscaped(t *testing.T) {
+	e := newEnv(t) // alice, bob, carol, mallory
+	for _, c := range []struct {
+		q    string
+		want int
+	}{
+		{"%%%", 0}, {"___", 0}, {"ali", 1}, {"ALI", 1}, {"lice", 0}, {"zzz", 0},
+	} {
+		got, err := e.q.SearchUsers(c.q, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != c.want {
+			t.Errorf("SearchUsers(%q) = %d users, want %d", c.q, len(got), c.want)
+		}
+	}
+}
+
+func TestReadReceiptsOnlyCoverMessagesAddressedToMe(t *testing.T) {
+	e := newEnv(t)
+	nonce := bytes.Repeat([]byte{1}, 12)
+	e.do(e.msgs, "alice", "POST", "/api/messages", map[string]interface{}{"recipient_id": e.users["bob"], "ciphertext": directMsg(), "nonce": nonce})
+	// Alice opening the chat must NOT mark her own outgoing message as read by Bob.
+	if err := e.q.MarkConversationRead(e.users["alice"], e.users["bob"], ""); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := e.q.GetDirectMessages(e.users["alice"], e.users["bob"], nil, nil, 10)
+	if len(rows) != 1 || rows[0].ReadAt != nil {
+		t.Fatalf("sender's own message was marked read without the recipient reading it: %+v", rows)
+	}
+	if err := e.q.MarkConversationRead(e.users["bob"], e.users["alice"], ""); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = e.q.GetDirectMessages(e.users["alice"], e.users["bob"], nil, nil, 10)
+	if rows[0].ReadAt == nil {
+		t.Error("recipient reading should mark it read")
+	}
+}
+
+func TestUploadQuota(t *testing.T) {
+	e := newEnv(t)
+	e.files.SetUserQuota(150) // each test upload is 100 bytes
+	gid := e.createGroup(t)
+	if w := upload(e, "alice", gid, "group"); w.Code != 201 {
+		t.Fatalf("first upload = %d", w.Code)
+	}
+	if w := upload(e, "alice", gid, "group"); w.Code != 413 {
+		t.Errorf("upload over quota = %d, want 413", w.Code)
+	}
+	if w := upload(e, "bob", gid, "group"); w.Code != 201 {
+		t.Errorf("quota must be per user; bob's first upload = %d", w.Code)
+	}
+}
+
+func TestWSTicketsAreSingleUseAndExpire(t *testing.T) {
+	tk := IssueWSTicket("u1")
+	if RedeemWSTicket(tk) != "u1" {
+		t.Fatal("fresh ticket should redeem")
+	}
+	if RedeemWSTicket(tk) != "" {
+		t.Error("ticket must not work twice")
+	}
+	if RedeemWSTicket("nope") != "" {
+		t.Error("unknown ticket must not work")
+	}
+	wsTickets.mu.Lock()
+	wsTickets.tickets["old"] = ticketEntry{userID: "u1", expires: time.Now().Add(-time.Second)}
+	wsTickets.mu.Unlock()
+	if RedeemWSTicket("old") != "" {
+		t.Error("expired ticket must not work")
 	}
 }

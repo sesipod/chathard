@@ -11,6 +11,8 @@ type RateLimitConfig struct {
 	Register   LimitSpec // 3 per hour
 	Messages   LimitSpec // 60 per minute
 	UserSearch LimitSpec // 30 per minute
+	API        LimitSpec // every authenticated request, per IP
+	Upload     LimitSpec // file uploads, per IP
 	Recovery   LimitSpec // 3 failed -> 1hr lock
 }
 
@@ -29,6 +31,8 @@ func DefaultRateLimitConfig() RateLimitConfig {
 		Register:   LimitSpec{MaxRequests: 3, Window: time.Hour},
 		Messages:   LimitSpec{MaxRequests: 60, Window: time.Minute},
 		UserSearch: LimitSpec{MaxRequests: 30, Window: time.Minute},
+		API:        LimitSpec{MaxRequests: 900, Window: time.Minute},
+		Upload:     LimitSpec{MaxRequests: 30, Window: time.Minute},
 		Recovery:   LimitSpec{MaxRequests: 3, Window: time.Hour, LockOnFail: true, LockMax: 3, LockDur: time.Hour},
 	}
 }
