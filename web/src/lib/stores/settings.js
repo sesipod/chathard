@@ -106,7 +106,28 @@ export function setAutoShowImages(convId, value) {
   } catch {}
 }
 
+// ── Notifications (all local to this browser) ──
+//
+// Sound is on by default. Desktop notifications are OFF until the user turns
+// them on (browsers require a click to grant permission). Notification text is
+// generic by default — "New message" — because notification centres and lock
+// screens can be read by other people and logged by the OS.
+
+const NOTIFY_SOUND = `${STORAGE_PREFIX}notify-sound`;
+const NOTIFY_DESKTOP = `${STORAGE_PREFIX}notify-desktop`;
+const NOTIFY_SENDER = `${STORAGE_PREFIX}notify-sender`;
+
+export const notifySound = writable(readFromStorage(NOTIFY_SOUND, 'true') === 'true');
+export const notifyDesktop = writable(readFromStorage(NOTIFY_DESKTOP, 'false') === 'true');
+export const notifyShowSender = writable(readFromStorage(NOTIFY_SENDER, 'false') === 'true');
+notifySound.subscribe((v) => writeToStorage(NOTIFY_SOUND, String(v)));
+notifyDesktop.subscribe((v) => writeToStorage(NOTIFY_DESKTOP, String(v)));
+notifyShowSender.subscribe((v) => writeToStorage(NOTIFY_SENDER, String(v)));
+
 export const settings = {
+  notifySound,
+  notifyDesktop,
+  notifyShowSender,
   theme,
   defaultRetention,
   toggleTheme,

@@ -16,6 +16,7 @@ TailChat is a **Signal-style encrypted messenger** that runs exclusively behind 
 - **Real-time** — WebSocket push for instant message delivery and typing indicators
 - **No public internet** — the only open port is WireGuard (UDP 51820); the app is served at `https://chat.your-domain` only to VPN peers
 - **PWA** — install on mobile, works offline, sends notifications
+- **Alerts while the app is open** — a short sound, an optional browser notification and an unread count in the tab title. Notifications say only "New message" (sender's name is an opt-in, message text is never shown). Nothing is sent to any push service, so there are **no alerts while the app is closed**; messages wait on the server, encrypted, until the user opens it.
 - **Retention controls** — per-conversation auto-delete timers (1h, 24h, 7d, 30d, 90d)
 
 <img src="https://via.placeholder.com/800x400/020617/2563eb?text=TailChat+Screenshot" alt="TailChat UI" />
@@ -108,6 +109,7 @@ The automated browser test searches the whole database, write-ahead log, blob di
 
 ### Known limits (read these)
 
+- **No push notifications when the app is closed.** Phone push goes through Apple/Google servers, which would leak metadata and doesn't fit a VPN-only design. If you add email "you have a message" notices later, keep them opt-in, a rate-limited digest, with fixed generic text and no links; the server would then have to store users' real email addresses.
 - **The server serves the app's JavaScript.** A malicious server operator could ship a modified web app that leaks keys to them. End-to-end encryption in a web app can never fully remove this; it protects against stolen data, database access, backups and passive snooping, but not against an operator who actively replaces the code. Mitigations: keep the server patched, restrict who has admin access, and consider shipping the app as a separately signed package later.
 - **No forward secrecy, and an account key cannot be rotated.** Anyone who has your account key *and* a copy of the encrypted data (a server backup, or a hostile admin) can decrypt your history. **If a device is lost or stolen: delete that device's WireGuard peer in wg-easy first.** Without a VPN route the thief cannot reach the server at all, so the key on the device is useless for live access (give every device its own peer so this only affects the stolen one). Then treat the account as burned if the thief could also obtain server data, and create a new one.
 - **A hostile server can censor.** It cannot read or forge messages, but it can delete or delay them, withhold a group key rotation (letting a removed member keep a stale key), or show wrong timestamps. The app refuses to *go back* to an older group key than it has seen, but cannot detect a rotation it was never told about.

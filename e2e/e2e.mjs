@@ -13,7 +13,15 @@ const secretsExtra = [];
 const ok = (name) => { results.push(name); console.log('  ✔', name); };
 
 async function newUser(handle) {
-  const ctx = await browser.newContext({ baseURL: BASE });
+  const ctx = await browser.newContext({ baseURL: BASE, permissions: ['notifications'] });
+  // record every Notification and every beep so the test can assert on them
+  await ctx.addInitScript(() => {
+    window.__notes = []; window.__beeps = 0;
+    const N = window.Notification;
+    if (N) window.Notification = class extends N { constructor(t, o) { super(t, o); window.__notes.push({ title: t, body: o && o.body }); } };
+    const AC = window.AudioContext;
+    if (AC) { const co = AC.prototype.createOscillator; AC.prototype.createOscillator = function () { window.__beeps++; return co.apply(this, arguments); }; }
+  });
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.log(`  [${handle}] pageerror:`, e.message));
   page.on('response', async (r) => { if (r.status() >= 400 && r.status() !== 401 && r.status() !== 404) console.log(`  [${handle}] HTTP ${r.status()} ${r.request().method()} ${new URL(r.url()).pathname} -> ${(await r.text().catch(() => '')).trim().slice(0, 80)}`); });
@@ -215,6 +223,49 @@ const carolCanFetch = await carol.page.evaluate(async (gid) => {
 assert.equal(carolCanFetch, 404);
 ok('carol no longer sees the group and the server refuses her the ciphertext');
 secretsExtra.push(POST);
+
+console.log('\n== Alerts while the app is open ==');
+const notes = () => bob.page.evaluate(() => ({ n: window.__notes.slice(), b: window.__beeps }));
+await bob.page.getByLabel('Settings').click();
+await bob.page.locator('label.toggle').filter({ has: bob.page.getByLabel('Desktop notifications') }).click();
+assert.equal(await bob.page.getByLabel('Desktop notifications').isChecked(), true);
+await bob.page.locator('.hdr .back').click();
+// bobby is looking at the group; alice messages him privately -> alert
+await alice.page.locator('.chat-name', { hasText: 'bobby' }).first().click();
+const before = await notes();
+await send(alice, 'notify-test-8080');
+await bob.page.waitForFunction((n) => window.__notes.length > n, before.n.length, { timeout: 15000 });
+let after = await notes();
+const last = after.n[after.n.length - 1];
+assert.deepEqual(last, { title: 'TailChat', body: 'New message' });
+assert.ok(after.b > before.b, 'a beep should play');
+assert.ok(!JSON.stringify(after.n).includes('notify-test') && !JSON.stringify(after.n).includes('alice'), 'no content or name by default');
+ok('background chat: beep + notification that says only "New message" (no sender, no content)');
+
+await bob.page.getByLabel('Settings').click();
+await bob.page.locator('label.toggle').filter({ has: bob.page.getByLabel('Show sender name in notifications') }).click();
+await bob.page.locator('.hdr .back').click();
+await send(alice, 'notify-test-sender-9090');
+await bob.page.waitForFunction((n) => window.__notes.length > n, after.n.length, { timeout: 15000 });
+after = await notes();
+assert.equal(after.n[after.n.length - 1].body, 'New message from @alice');
+assert.ok(!JSON.stringify(after.n).includes('notify-test'), 'message text must never be in a notification');
+ok('with the opt-in, the sender\'s name is shown; message text never is');
+
+// no alert when bobby is already looking at that conversation, or for his own messages
+await bob.page.locator('.chat-name', { hasText: 'alice' }).first().click();
+await bob.page.waitForTimeout(500);
+const quietBefore = await notes();
+await send(alice, 'quiet-while-viewing-1');
+await bubble(bob.page, 'quiet-while-viewing-1').waitFor({ timeout: 15000 });
+await send(bob, 'bobs-own-message-2');
+await bubble(alice.page, 'bobs-own-message-2').waitFor({ timeout: 15000 });
+await bob.page.waitForTimeout(1000);
+const quietAfter = await notes();
+assert.equal(quietAfter.n.length, quietBefore.n.length);
+assert.equal(quietAfter.b, quietBefore.b);
+ok('no alert for the chat you are viewing or for your own messages');
+secretsExtra.push('notify-test-8080', 'notify-test-sender-9090', 'quiet-while-viewing-1', 'bobs-own-message-2');
 
 console.log('\n== Hardening checks (raw HTTP / WebSocket) ==');
 const token = await alice.page.evaluate(() => sessionStorage.getItem('tailchat-token'));

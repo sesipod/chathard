@@ -2,7 +2,8 @@
   import { createEventDispatcher, onMount } from 'svelte';
   import Avatar from './common/Avatar.svelte';
   import { auth } from '../lib/stores/auth.js';
-  import { settings, theme, defaultRetention } from '../lib/stores/settings.js';
+  import { settings, theme, defaultRetention, notifySound, notifyDesktop, notifyShowSender } from '../lib/stores/settings.js';
+  import { enableDesktopNotifications } from '../lib/notify.js';
   import api from '../lib/api.js';
   import qrcode from 'qrcode-generator';
   import { formatAccountKey } from '../lib/crypto/identity.js';
@@ -37,6 +38,15 @@
     return unsub;
   });
 
+  let notifyNote = '';
+  async function toggleDesktop(e) {
+    notifyNote = '';
+    if (e.target.checked) {
+      const ok = await enableDesktopNotifications();
+      if (!ok) { e.target.checked = false; notifyDesktop.set(false); notifyNote = 'Your browser blocked notifications. Allow them for this site in the browser settings.'; return; }
+    }
+    notifyDesktop.set(e.target.checked);
+  }
   function back() { dispatch('close'); }
   function copy(t) { navigator.clipboard.writeText(t).catch(() => {}); }
   function trunc(s, n) { return s?.length > n ? s.slice(0, n) + '…' : s || ''; }
@@ -136,6 +146,13 @@
   <div class="row"><span>This device<br /><small class="muted">Signed in without the key</small></span><button class="btn btn-sm btn-danger" on:click={() => { confirmForget = true; }}>Forget</button></div>
   {/if}
   <div class="row"><span>Session</span><button class="btn btn-sm btn-danger" on:click={() => { confirmLogout = true; }}>Log out</button></div>
+</div></section>
+
+<section class="sec"><h3 class="st">Notifications</h3><div class="card">
+  <div class="row"><span>Sound</span><label class="toggle"><input type="checkbox" aria-label="Notification sound" checked={$notifySound} on:change={(e) => notifySound.set(e.target.checked)} /><span class="toggle-slider"></span></label></div>
+  <div class="row"><span>Desktop notifications<br /><small class="muted">Only while TailChat is open in a tab</small></span><label class="toggle"><input type="checkbox" aria-label="Desktop notifications" checked={$notifyDesktop} on:change={toggleDesktop} /><span class="toggle-slider"></span></label></div>
+  <div class="row"><span>Show sender's name<br /><small class="muted">Off: notifications just say "New message"</small></span><label class="toggle"><input type="checkbox" aria-label="Show sender name in notifications" checked={$notifyShowSender} on:change={(e) => notifyShowSender.set(e.target.checked)} /><span class="toggle-slider"></span></label></div>
+  {#if notifyNote}<div class="row"><small class="muted">{notifyNote}</small></div>{/if}
 </div></section>
 
 <section class="sec"><h3 class="st">Appearance</h3><div class="card"><div class="row">

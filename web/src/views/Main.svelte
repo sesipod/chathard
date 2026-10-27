@@ -13,6 +13,9 @@
   import api from '../lib/api.js';
   import { createGroup, invalidateGroup, rotateGroupKey, sendFile, sendText } from '../lib/chat.js';
   import { getUser } from '../lib/directory.js';
+  import { notifyIncoming, watchVisibility } from '../lib/notify.js';
+  import { notifyShowSender } from '../lib/stores/settings.js';
+  import { get } from 'svelte/store';
   import LeftPanel from '../components/LeftPanel.svelte';
   import RightPanel from '../components/RightPanel.svelte';
   import NewChatModal from '../components/NewChatModal.svelte';
@@ -97,6 +100,8 @@
       });
     }
 
+    const stopWatching = watchVisibility();
+
     // Track window resize for mobile layout
     windowWidth = window.innerWidth;
     const onResize = () => {
@@ -106,6 +111,7 @@
 
     return () => {
       window.removeEventListener('resize', onResize);
+      stopWatching();
       unsubAuth();
       if (ws) ws.close();
     };
@@ -140,6 +146,9 @@
           // The server only says WHICH conversation changed; we fetch and decrypt it here.
           const convId = data.conversation_id || data.group_id || data.sender_id;
           const isGroup = !!data.group_id;
+          if (convId && data.sender_id && data.sender_id !== sessionStorage.getItem('tailchat-user-id')) {
+            alertIncoming(convId, data.sender_id);
+          }
           if (convId) {
             chatStore.loadConversations();
             chatStore.loadMessagesWithType(convId, isGroup);
@@ -178,6 +187,27 @@
     } catch (e) {
       console.warn('Failed to parse WS message:', e);
     }
+  }
+
+  // ── Alerts for messages from other people ──
+  async function alertIncoming(convId, senderId) {
+    const viewing = !document.hidden && document.hasFocus() && $activeConversationId === convId;
+    let senderHandle;
+    if (!viewing && get(notifyShowSender)) {
+      try {
+        senderHandle = (await getUser(senderId)).handle;
+      } catch {
+        /* unverifiable sender: stay generic */
+      }
+    }
+    notifyIncoming({
+      viewing,
+      senderHandle,
+      onClick: () => {
+        chatStore.setActiveConversation(convId);
+        chatStore.loadMessages(convId);
+      },
+    });
   }
 
   // ── Typing: receive indicator ──
