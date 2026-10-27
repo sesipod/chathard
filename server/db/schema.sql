@@ -34,9 +34,14 @@ CREATE TABLE IF NOT EXISTS groups (
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- status 'invited' = added by the admin but not yet accepted. Invited people
+-- see only "X invited you"; they get no keys, messages or notifications until
+-- they accept. Declining deletes the row and the key envelope addressed to them.
 CREATE TABLE IF NOT EXISTS group_members (
-    group_id  TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    group_id    TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'invited')),
+    invited_by  TEXT,
     PRIMARY KEY (group_id, user_id)
 );
 

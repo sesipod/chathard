@@ -401,7 +401,11 @@ func (q *Queries) CreateGroupWithMembers(id string, encryptedName []byte, creato
 		return err
 	}
 	for _, e := range envelopes {
-		if _, err := tx.Exec(`INSERT INTO group_members (group_id, user_id) VALUES (?, ?)`, id, e.UserID); err != nil {
+		status := "invited"
+		if e.UserID == creatorID {
+			status = "active"
+		}
+		if _, err := tx.Exec(`INSERT INTO group_members (group_id, user_id, status, invited_by) VALUES (?, ?, ?, ?)`, id, e.UserID, status, creatorID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO group_key_envelopes (group_id, epoch, user_id, signer_id, envelope) VALUES (?, 0, ?, ?, ?)`,
@@ -425,10 +429,83 @@ func (q *Queries) GetGroup(id string) (*GroupInfo, error) {
 	return g, nil
 }
 
+// IsGroupMember is true only for ACTIVE members (accepted). Every read/send
+// permission check uses this, so a pending invitee can do nothing.
 func (q *Queries) IsGroupMember(groupID, userID string) (bool, error) {
+	var n int
+	err := q.db.QueryRow(`SELECT COUNT(*) FROM group_members WHERE group_id = ? AND user_id = ? AND status = 'active'`, groupID, userID).Scan(&n)
+	return n > 0, err
+}
+
+// IsGroupParticipant is true for active members AND pending invitees.
+func (q *Queries) IsGroupParticipant(groupID, userID string) (bool, error) {
 	var n int
 	err := q.db.QueryRow(`SELECT COUNT(*) FROM group_members WHERE group_id = ? AND user_id = ?`, groupID, userID).Scan(&n)
 	return n > 0, err
+}
+
+// Invite is a pending group invitation.
+type Invite struct {
+	GroupID   string `json:"group_id"`
+	InvitedBy string `json:"invited_by"`
+	CreatedAt string `json:"created_at"`
+}
+
+func (q *Queries) ListInvites(userID string) ([]Invite, error) {
+	rows, err := q.db.Query(`SELECT gm.group_id, COALESCE(gm.invited_by, g.created_by), g.created_at
+		FROM group_members gm JOIN groups g ON g.id = gm.group_id
+		WHERE gm.user_id = ? AND gm.status = 'invited' ORDER BY g.created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Invite{}
+	for rows.Next() {
+		var i Invite
+		if err := rows.Scan(&i.GroupID, &i.InvitedBy, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		normalizeTimestamp(&i.CreatedAt)
+		out = append(out, i)
+	}
+	return out, rows.Err()
+}
+
+func (q *Queries) CountPendingInvites(userID string) (int, error) {
+	var n int
+	err := q.db.QueryRow(`SELECT COUNT(*) FROM group_members WHERE user_id = ? AND status = 'invited'`, userID).Scan(&n)
+	return n, err
+}
+
+// AcceptInvite activates a pending invitation. False if there was none.
+func (q *Queries) AcceptInvite(groupID, userID string) (bool, error) {
+	res, err := q.db.Exec(`UPDATE group_members SET status = 'active' WHERE group_id = ? AND user_id = ? AND status = 'invited'`, groupID, userID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// DeclineInvite removes a pending invitation and the key envelopes addressed
+// to the invitee. False if there was none.
+func (q *Queries) DeclineInvite(groupID, userID string) (bool, error) {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM group_members WHERE group_id = ? AND user_id = ? AND status = 'invited'`, groupID, userID)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	if _, err := tx.Exec(`DELETE FROM group_key_envelopes WHERE group_id = ? AND user_id = ?`, groupID, userID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // AddGroupMember adds a member and stores their envelope for the current epoch.
@@ -438,7 +515,7 @@ func (q *Queries) AddGroupMember(groupID string, e GroupEnvelope) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO group_members (group_id, user_id) VALUES (?, ?)`, groupID, e.UserID); err != nil {
+	if _, err := tx.Exec(`INSERT INTO group_members (group_id, user_id, status, invited_by) VALUES (?, ?, 'invited', ?)`, groupID, e.UserID, e.SignerID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO group_key_envelopes (group_id, epoch, user_id, signer_id, envelope)
@@ -516,8 +593,19 @@ func (q *Queries) GetMemberEnvelopes(groupID, userID string) ([]GroupEnvelope, e
 	return out, rows.Err()
 }
 
+// GetGroupMemberIDs returns ACTIVE members (who receive messages/notifications).
 func (q *Queries) GetGroupMemberIDs(groupID string) ([]string, error) {
-	rows, err := q.db.Query(`SELECT user_id FROM group_members WHERE group_id = ?`, groupID)
+	return q.groupIDs(groupID, `AND status = 'active'`)
+}
+
+// GetGroupParticipantIDs returns active members plus pending invitees. Key
+// rotation must cover all of them so an invitee who accepts later gets the current key.
+func (q *Queries) GetGroupParticipantIDs(groupID string) ([]string, error) {
+	return q.groupIDs(groupID, ``)
+}
+
+func (q *Queries) groupIDs(groupID, extra string) ([]string, error) {
+	rows, err := q.db.Query(`SELECT user_id FROM group_members WHERE group_id = ? `+extra, groupID)
 	if err != nil {
 		return nil, err
 	}
@@ -540,7 +628,7 @@ func (q *Queries) GetUserGroupsWithActivity(userID string) ([]GroupWithActivity,
 		SELECT g.id, g.encrypted_name, g.created_by, g.epoch, g.needs_rotation, g.created_at,
 		       COALESCE(MAX(m.created_at), g.created_at) AS last_active
 		FROM groups g
-		INNER JOIN group_members gm ON gm.group_id = g.id
+		INNER JOIN group_members gm ON gm.group_id = g.id AND gm.status = 'active'
 		LEFT JOIN messages m ON m.group_id = g.id
 		WHERE gm.user_id = ?
 		GROUP BY g.id
@@ -695,7 +783,7 @@ func (q *Queries) CanAccessMessage(userID, messageID string) (bool, error) {
 	err := q.db.QueryRow(`
 		SELECT COUNT(*) FROM messages m
 		WHERE m.id = ? AND (m.sender_id = ? OR m.recipient_id = ?
-		   OR EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id = m.group_id AND gm.user_id = ?))`,
+		   OR EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id = m.group_id AND gm.user_id = ? AND gm.status = 'active'))`,
 		messageID, userID, userID, userID).Scan(&n)
 	return n > 0, err
 }

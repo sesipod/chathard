@@ -215,6 +215,22 @@ const api = {
     return res.json();
   },
 
+  async fetchInvites() {
+    const res = await fetch('/api/groups/invites', { headers: headers() });
+    await throwIfNotOk(res);
+    return (await res.json()).invites ?? [];
+  },
+
+  async acceptInvite(groupId) {
+    const res = await fetch(`/api/groups/${groupId}/accept`, { method: 'POST', headers: headers() });
+    await throwIfNotOk(res);
+  },
+
+  async declineInvite(groupId) {
+    const res = await fetch(`/api/groups/${groupId}/decline`, { method: 'POST', headers: headers() });
+    await throwIfNotOk(res);
+  },
+
   async fetchGroupKeys(groupId) {
     const res = await fetch(`/api/groups/${groupId}/keys`, { headers: headers() });
     await throwIfNotOk(res);

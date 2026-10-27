@@ -77,8 +77,17 @@ func (e *env) do(h http.Handler, as, method, path string, body interface{}) *htt
 
 func env80() []byte { return bytes.Repeat([]byte{7}, 144) }
 
-// createGroup makes a group owned by alice with alice+bob.
+// createGroup makes a group owned by alice; bob is invited AND has accepted.
 func (e *env) createGroup(t *testing.T) string {
+	gid := e.createGroupPending(t)
+	if w := e.do(e.groups, "bob", "POST", "/api/groups/"+gid+"/accept", nil); w.Code != 204 {
+		t.Fatalf("accept: %d %s", w.Code, w.Body)
+	}
+	return gid
+}
+
+// createGroupPending makes a group owned by alice with bob invited but NOT accepted.
+func (e *env) createGroupPending(t *testing.T) string {
 	gid := uuid.New().String()
 	w := e.do(e.groups, "alice", "POST", "/api/groups", map[string]interface{}{
 		"id": gid, "encrypted_name": []byte("ciphertext-name"),
@@ -391,5 +400,126 @@ func TestWSTicketsAreSingleUseAndExpire(t *testing.T) {
 	wsTickets.mu.Unlock()
 	if RedeemWSTicket("old") != "" {
 		t.Error("expired ticket must not work")
+	}
+}
+
+func TestPendingInviteeCanDoNothingUntilAccepted(t *testing.T) {
+	e := newEnv(t)
+	gid := e.createGroupPending(t)
+	nonce := bytes.Repeat([]byte{1}, 12)
+
+	// bob sees the invitation, but only the invitation
+	w := e.do(e.groups, "bob", "GET", "/api/groups/invites", nil)
+	var inv struct {
+		Invites []struct {
+			GroupID   string `json:"group_id"`
+			InvitedBy string `json:"invited_by"`
+		}
+	}
+	json.Unmarshal(w.Body.Bytes(), &inv)
+	if len(inv.Invites) != 1 || inv.Invites[0].GroupID != gid || inv.Invites[0].InvitedBy != e.users["alice"] {
+		t.Fatalf("invitation list wrong: %s", w.Body)
+	}
+	if w := e.do(e.groups, "bob", "GET", "/api/groups", nil); bytes.Contains(w.Body.Bytes(), []byte(gid)) {
+		t.Error("a pending invite must not appear as one of bob's groups")
+	}
+	for _, c := range []struct {
+		name, method, path string
+		body               interface{}
+	}{
+		{"read messages", "GET", "/api/groups/" + gid + "/messages", nil},
+		{"get keys", "GET", "/api/groups/" + gid + "/keys", nil},
+		{"read via /api/messages", "GET", "/api/messages?group_id=" + gid, nil},
+		{"send", "POST", "/api/messages", map[string]interface{}{"group_id": gid, "ciphertext": groupMsg(0), "nonce": nonce}},
+	} {
+		h := http.Handler(e.groups)
+		if c.path == "/api/messages" || len(c.path) > 13 && c.path[:13] == "/api/messages" {
+			h = e.msgs
+		}
+		if w := e.do(h, "bob", c.method, c.path, c.body); w.Code != 404 {
+			t.Errorf("pending invitee %s = %d, want 404", c.name, w.Code)
+		}
+	}
+	if w := upload(e, "bob", gid, "group"); w.Code != 404 {
+		t.Errorf("pending invitee upload = %d, want 404", w.Code)
+	}
+	// and a stranger cannot accept someone else's invitation
+	if w := e.do(e.groups, "mallory", "POST", "/api/groups/"+gid+"/accept", nil); w.Code != 404 {
+		t.Errorf("uninvited accept = %d, want 404", w.Code)
+	}
+
+	if w := e.do(e.groups, "bob", "POST", "/api/groups/"+gid+"/accept", nil); w.Code != 204 {
+		t.Fatalf("accept = %d", w.Code)
+	}
+	if w := e.do(e.groups, "bob", "GET", "/api/groups/"+gid+"/keys", nil); w.Code != 200 {
+		t.Errorf("after accept, keys = %d, want 200", w.Code)
+	}
+	if w := e.do(e.groups, "bob", "POST", "/api/groups/"+gid+"/accept", nil); w.Code != 404 {
+		t.Errorf("accepting twice = %d, want 404", w.Code)
+	}
+}
+
+func TestDeclineDeletesKeyEnvelopeAndMembership(t *testing.T) {
+	e := newEnv(t)
+	gid := e.createGroupPending(t)
+	if w := e.do(e.groups, "bob", "POST", "/api/groups/"+gid+"/decline", nil); w.Code != 204 {
+		t.Fatalf("decline = %d", w.Code)
+	}
+	if ok, _ := e.q.IsGroupParticipant(gid, e.users["bob"]); ok {
+		t.Error("declined invitee must not remain a participant")
+	}
+	if envs, _ := e.q.GetMemberEnvelopes(gid, e.users["bob"]); len(envs) != 0 {
+		t.Error("the key envelope addressed to a decliner must be deleted")
+	}
+	if w := e.do(e.groups, "bob", "POST", "/api/groups/"+gid+"/decline", nil); w.Code != 404 {
+		t.Errorf("declining twice = %d, want 404", w.Code)
+	}
+	// an ACTIVE member cannot use decline to bypass the leave/rotate flow
+	gid2 := e.createGroup(t)
+	if w := e.do(e.groups, "bob", "POST", "/api/groups/"+gid2+"/decline", nil); w.Code != 404 {
+		t.Errorf("active member decline = %d, want 404", w.Code)
+	}
+}
+
+func TestRotationMustAlsoCoverPendingInvitees(t *testing.T) {
+	e := newEnv(t)
+	gid := e.createGroup(t) // alice + bob(active)
+	add := map[string]interface{}{"user_id": e.users["carol"], "epoch": 0, "envelope": env80()}
+	if w := e.do(e.groups, "alice", "POST", "/api/groups/"+gid+"/members", add); w.Code != 204 {
+		t.Fatalf("invite carol = %d", w.Code)
+	}
+	if w := e.do(e.groups, "alice", "POST", "/api/groups/"+gid+"/members", add); w.Code != 409 {
+		t.Errorf("inviting twice = %d, want 409", w.Code)
+	}
+	two := []map[string]interface{}{{"user_id": e.users["alice"], "envelope": env80()}, {"user_id": e.users["bob"], "envelope": env80()}}
+	three := append(append([]map[string]interface{}{}, two...), map[string]interface{}{"user_id": e.users["carol"], "envelope": env80()})
+	if w := e.do(e.groups, "alice", "POST", "/api/groups/"+gid+"/rotate", map[string]interface{}{"epoch": 1, "encrypted_name": []byte("n"), "members": two}); w.Code != 400 {
+		t.Errorf("rotation that skips a pending invitee = %d, want 400", w.Code)
+	}
+	if w := e.do(e.groups, "alice", "POST", "/api/groups/"+gid+"/rotate", map[string]interface{}{"epoch": 1, "encrypted_name": []byte("n"), "members": three}); w.Code != 204 {
+		t.Errorf("rotation covering everyone = %d, want 204", w.Code)
+	}
+	// carol accepts after the rotation and gets the CURRENT (epoch 1) key
+	if w := e.do(e.groups, "carol", "POST", "/api/groups/"+gid+"/accept", nil); w.Code != 204 {
+		t.Fatalf("carol accept = %d", w.Code)
+	}
+	envs, _ := e.q.GetMemberEnvelopes(gid, e.users["carol"])
+	if len(envs) == 0 || envs[len(envs)-1].Epoch != 1 {
+		t.Errorf("late joiner must hold the epoch-1 key, got %+v", envs)
+	}
+}
+
+func TestInviteSpamCapAndNoMessagesToPending(t *testing.T) {
+	e := newEnv(t)
+	for i := 0; i < maxPendingInvites; i++ {
+		e.createGroupPending(t) // bob collects invitations
+	}
+	gid := uuid.New().String()
+	w := e.do(e.groups, "alice", "POST", "/api/groups", map[string]interface{}{
+		"id": gid, "encrypted_name": []byte("x"),
+		"members": []map[string]interface{}{{"user_id": e.users["alice"], "envelope": env80()}, {"user_id": e.users["bob"], "envelope": env80()}},
+	})
+	if w.Code != 429 {
+		t.Errorf("invite beyond the pending cap = %d, want 429", w.Code)
 	}
 }

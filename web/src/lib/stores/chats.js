@@ -16,6 +16,7 @@
 import { writable, derived } from 'svelte/store';
 import api from '../api.js';
 import { groupDisplayName, openMessages } from '../chat.js';
+import { getUsers } from '../directory.js';
 
 // ── Stores ──
 
@@ -25,6 +26,9 @@ export const conversations = writable([]);
 /** Id of the currently active/focused conversation. */
 export const activeConversationId = writable('');
 
+/** Pending group invitations: [{group_id, invited_by, handle, created_at}]. */
+export const invites = writable([]);
+
 /** Security warnings keyed by conversation id, e.g. a contact's key changed. */
 export const securityAlerts = writable({});
 
@@ -32,6 +36,22 @@ export const securityAlerts = writable({});
 export const messages = writable({});
 
 // ── Actions ──
+
+/** Fetch pending group invitations (group names stay hidden until you accept). */
+async function loadInvites() {
+  try {
+    const list = await api.fetchInvites();
+    let names = new Map();
+    try {
+      names = await getUsers(list.map((i) => i.invited_by));
+    } catch {
+      /* show "someone" if the inviter's key can't be verified */
+    }
+    invites.set(list.map((i) => ({ ...i, handle: names.get(i.invited_by)?.handle || 'someone' })));
+  } catch (err) {
+    console.error('Failed to load invitations:', err);
+  }
+}
 
 /** Fetch all conversations from the server and sort by recency. */
 async function loadConversations() {
@@ -189,6 +209,8 @@ export const activeConversation = derived(
 
 export const chatStore = {
   securityAlerts,
+  invites,
+  loadInvites,
   conversations,
   activeConversationId,
   messages,

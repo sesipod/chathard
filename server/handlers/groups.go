@@ -14,16 +14,20 @@ import (
 )
 
 const (
-	maxGroupMembers  = 100
-	maxEnvelopeBytes = 512
-	maxEncNameBytes  = 512
+	maxGroupMembers   = 100
+	maxEnvelopeBytes  = 512
+	maxEncNameBytes   = 512
+	maxPendingInvites = 20 // per person, so nobody can bury someone in invitations
 )
 
 // GroupsHandler handles group endpoints. Group names and keys are opaque
 // ciphertext to the server; this handler enforces WHO may do what.
 //
-//	POST   /api/groups                       create (caller becomes admin)
-//	GET    /api/groups                       list my groups
+//	POST   /api/groups                       create (caller becomes admin; others are INVITED)
+//	GET    /api/groups                       list my groups (accepted only)
+//	GET    /api/groups/invites               my pending invitations
+//	POST   /api/groups/{id}/accept           accept an invitation
+//	POST   /api/groups/{id}/decline          decline an invitation
 //	GET    /api/groups/{id}/keys             my key envelopes (all epochs) + member roster
 //	GET    /api/groups/{id}/messages         message history (members only)
 //	POST   /api/groups/{id}/members          admin adds a member (current epoch)
@@ -43,6 +47,11 @@ func (h *GroupsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/groups")
 	path = strings.TrimPrefix(path, "/groups")
 	path = strings.Trim(path, "/")
+
+	if path == "invites" && r.Method == http.MethodGet {
+		h.listInvites(w, r)
+		return
+	}
 
 	if path == "" {
 		switch r.Method {
@@ -64,6 +73,10 @@ func (h *GroupsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case len(parts) == 2 && parts[1] == "accept" && r.Method == http.MethodPost:
+		h.respondToInvite(w, r, groupID, true)
+	case len(parts) == 2 && parts[1] == "decline" && r.Method == http.MethodPost:
+		h.respondToInvite(w, r, groupID, false)
 	case len(parts) == 2 && parts[1] == "keys" && r.Method == http.MethodGet:
 		h.getKeys(w, r, groupID)
 	case len(parts) == 2 && parts[1] == "messages" && r.Method == http.MethodGet:
@@ -148,15 +161,67 @@ func (h *GroupsHandler) createGroup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unknown member", http.StatusBadRequest)
 		return
 	}
+	for _, id := range ids {
+		if id == userID {
+			continue
+		}
+		if n, err := h.queries.CountPendingInvites(id); err != nil || n >= maxPendingInvites {
+			http.Error(w, "Someone you invited has too many pending invitations", http.StatusTooManyRequests)
+			return
+		}
+	}
 
 	if err := h.queries.CreateGroupWithMembers(req.ID, req.EncryptedName, userID, envs); err != nil {
 		http.Error(w, "Failed to create group", http.StatusConflict)
 		return
 	}
 
+	h.notifyUsers(req.ID, ids...)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"group_id": req.ID})
+}
+
+func (h *GroupsHandler) listInvites(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(CtxKeyUserID).(string)
+	invites, err := h.queries.ListInvites(userID)
+	if err != nil {
+		http.Error(w, "Failed to load invitations", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"invites": invites})
+}
+
+// respondToInvite accepts or declines the caller's own pending invitation.
+// Declining deletes the key envelope that was addressed to them, so they never
+// held a usable key.
+func (h *GroupsHandler) respondToInvite(w http.ResponseWriter, r *http.Request, groupID string, accept bool) {
+	userID := r.Context().Value(CtxKeyUserID).(string)
+	var ok bool
+	var err error
+	if accept {
+		ok, err = h.queries.AcceptInvite(groupID, userID)
+	} else {
+		ok, err = h.queries.DeclineInvite(groupID, userID)
+	}
+	if err != nil {
+		http.Error(w, "Failed", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+	h.notifyGroup(groupID, userID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// notifyUsers pings specific users (e.g. new invitees). Ids only; nothing secret.
+func (h *GroupsHandler) notifyUsers(groupID string, userIDs ...string) {
+	if hub := GetHub(); hub != nil {
+		hub.NotifyGroupChanged(groupID, userIDs...)
+	}
 }
 
 // notifyGroup pings the current members (and any extra users, e.g. someone just
@@ -225,11 +290,12 @@ func (h *GroupsHandler) getKeys(w http.ResponseWriter, r *http.Request, groupID 
 		http.Error(w, "Failed to load keys", http.StatusInternalServerError)
 		return
 	}
-	memberIDs, err := h.queries.GetGroupMemberIDs(groupID)
+	memberIDs, err := h.queries.GetGroupParticipantIDs(groupID)
 	if err != nil {
 		http.Error(w, "Failed to load members", http.StatusInternalServerError)
 		return
 	}
+	activeIDs, _ := h.queries.GetGroupMemberIDs(groupID)
 	members, err := h.queries.GetUsersByIDs(memberIDs)
 	if err != nil {
 		http.Error(w, "Failed to load members", http.StatusInternalServerError)
@@ -241,6 +307,7 @@ func (h *GroupsHandler) getKeys(w http.ResponseWriter, r *http.Request, groupID 
 		"group":     g,
 		"envelopes": envs,
 		"members":   members,
+		"active":    activeIDs, // everyone else in `members` is a pending invitee
 	})
 }
 
@@ -271,20 +338,24 @@ func (h *GroupsHandler) addMember(w http.ResponseWriter, r *http.Request, groupI
 		http.Error(w, "Unknown user", http.StatusBadRequest)
 		return
 	}
-	ids, _ := h.queries.GetGroupMemberIDs(groupID)
+	ids, _ := h.queries.GetGroupParticipantIDs(groupID)
 	if len(ids) >= maxGroupMembers {
 		http.Error(w, "Group is full", http.StatusBadRequest)
 		return
 	}
-	if already, _ := h.queries.IsGroupMember(groupID, req.UserID); already {
-		http.Error(w, "Already a member", http.StatusConflict)
+	if already, _ := h.queries.IsGroupParticipant(groupID, req.UserID); already {
+		http.Error(w, "Already a member or invited", http.StatusConflict)
+		return
+	}
+	if n, err := h.queries.CountPendingInvites(req.UserID); err != nil || n >= maxPendingInvites {
+		http.Error(w, "That person has too many pending invitations", http.StatusTooManyRequests)
 		return
 	}
 	if err := h.queries.AddGroupMember(groupID, db.GroupEnvelope{UserID: req.UserID, SignerID: userID, Epoch: req.Epoch, Envelope: req.Envelope}); err != nil {
 		http.Error(w, "Failed to add member", http.StatusInternalServerError)
 		return
 	}
-	h.notifyGroup(groupID, userID)
+	h.notifyUsers(groupID, req.UserID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -351,7 +422,7 @@ func (h *GroupsHandler) doRotate(w http.ResponseWriter, r *http.Request, groupID
 			http.Error(w, "Invalid member to remove", http.StatusBadRequest)
 			return
 		}
-		if isMember, _ := h.queries.IsGroupMember(groupID, remove); !isMember {
+		if isMember, _ := h.queries.IsGroupParticipant(groupID, remove); !isMember {
 			http.Error(w, "Not a member", http.StatusBadRequest)
 			return
 		}
@@ -361,8 +432,9 @@ func (h *GroupsHandler) doRotate(w http.ResponseWriter, r *http.Request, groupID
 		http.Error(w, "Invalid members", http.StatusBadRequest)
 		return
 	}
-	// Envelopes must cover exactly the members who remain — no more, no less.
-	current, err := h.queries.GetGroupMemberIDs(groupID)
+	// Envelopes must cover exactly the people who remain (members AND pending
+	// invitees, so a later "accept" still yields the current key) — no more, no less.
+	current, err := h.queries.GetGroupParticipantIDs(groupID)
 	if err != nil {
 		http.Error(w, "Failed to load members", http.StatusInternalServerError)
 		return

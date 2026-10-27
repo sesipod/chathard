@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 const DIR = process.env.E2E_DIR || '/tmp/tc-e2e';
 const BASE = 'http://127.0.0.1:3100';
 const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox'] });
+const { DatabaseSync: DB2 } = await import('node:sqlite');
+const peek = (sql) => { const d = new DB2(DIR + '/data/t.db', { readOnly: true }); d.exec('PRAGMA busy_timeout=5000'); try { return d.prepare(sql).all(); } finally { d.close(); } };
 const results = [];
 const secretsExtra = [];
 const ok = (name) => { results.push(name); console.log('  ✔', name); };
@@ -140,8 +142,43 @@ await alice.page.locator('.chat-name', { hasText: 'Top Secret Crew' }).first().c
 const GSEC = 'group-secret-launch-5566';
 await send(alice, GSEC);
 await bubble(alice.page, GSEC).waitFor();
+
+console.log('\n== Invitations: nothing is readable until you accept ==');
+const GID = peek('select id from groups')[0].id;
+assert.deepEqual(peek("select status from group_members where user_id in (select id from users where handle in ('bobby','carol'))").map((r) => r.status), ['invited', 'invited']);
 for (const u of [bob, carol]) {
   await u.page.reload();
+  await u.page.locator('.invite', { hasText: '@alice invited you' }).waitFor({ timeout: 15000 });
+  assert.equal(await u.page.locator('.chat-name', { hasText: 'Top Secret Crew' }).count(), 0, 'group must not be listed before accepting');
+  const codes = await u.page.evaluate(async (gid) => {
+    const h = { Authorization: 'Bearer ' + sessionStorage.getItem('tailchat-token') };
+    return Promise.all([`/api/groups/${gid}/messages`, `/api/groups/${gid}/keys`, `/api/messages?group_id=${gid}`].map(async (p) => (await fetch(p, { headers: h })).status));
+  }, GID);
+  assert.deepEqual(codes, [404, 404, 404]);
+}
+ok('bobby and carol see an invitation only; the server refuses them messages and keys');
+
+// carol declines a second group: the key addressed to her is deleted
+await alice.page.getByLabel('New conversation').click();
+await alice.page.locator('.new-menu-item', { hasText: 'New Group' }).click();
+await alice.page.getByLabel('Group name').fill('Unwanted Group');
+await alice.page.getByRole('button', { name: 'Next' }).click();
+await alice.page.getByPlaceholder('Search by handle (min 3 chars)...').fill('carol');
+await alice.page.getByLabel('Add carol').click();
+await alice.page.getByRole('button', { name: /Next \(1\)/ }).click();
+await alice.page.getByRole('button', { name: 'Create Group' }).click();
+await carol.page.locator('.invite').nth(1).waitFor({ timeout: 15000 });
+const unwantedId = peek("select id from groups where id != '" + GID + "'")[0].id;
+// invitations are listed newest first: the second group is on top
+await carol.page.locator('.invite').first().locator('button.decline').click();
+for (let i = 0; i < 20 && peek("select count(*) c from group_members where group_id='" + unwantedId + "' and status='invited'")[0].c > 0; i++) await new Promise((r) => setTimeout(r, 250));
+assert.equal(peek("select count(*) c from group_members where group_id='" + unwantedId + "' and user_id=(select id from users where handle='carol')")[0].c, 0);
+assert.equal(peek("select count(*) c from group_key_envelopes where group_id='" + unwantedId + "' and user_id=(select id from users where handle='carol')")[0].c, 0);
+ok('carol declined: membership AND the key envelope addressed to her are deleted');
+
+// accept the real group
+for (const u of [bob, carol]) {
+  await u.page.locator('.invite', { hasText: '@alice invited you' }).locator('button.accept').first().click();
   await u.page.locator('.chat-name', { hasText: 'Top Secret Crew' }).first().waitFor({ timeout: 15000 });
   await u.page.locator('.chat-name', { hasText: 'Top Secret Crew' }).first().click();
   await bubble(u.page, GSEC).waitFor({ timeout: 15000 });
@@ -152,8 +189,6 @@ await bubble(alice.page, 'carol-in-group-7788').waitFor({ timeout: 15000 });
 ok('group: carol -> alice');
 
 console.log('\n== Member leaves: admin rotates the group key, leaver is locked out ==');
-const { DatabaseSync: DB2 } = await import('node:sqlite');
-const peek = (sql) => { const d = new DB2(DIR + '/data/t.db', { readOnly: true }); d.exec('PRAGMA busy_timeout=5000'); try { return d.prepare(sql).all(); } finally { d.close(); } };
 await carol.page.reload();
 await carol.page.locator('.chat-name', { hasText: 'Top Secret Crew' }).first().click();
 await carol.page.getByLabel('More options').click();

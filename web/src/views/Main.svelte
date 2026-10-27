@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import {
     chatStore,
+    invites,
     conversations,
     activeConversationId,
     activeConversation,
@@ -18,6 +19,7 @@
   import NewGroupModal from '../components/NewGroupModal.svelte';
   import SettingsPage from '../components/SettingsPage.svelte';
   import FilesModal from '../components/FilesModal.svelte';
+  import InviteBanner from '../components/InviteBanner.svelte';
 
   // ── Auth guard ──
   let authenticated = false;
@@ -75,6 +77,7 @@
 
     // Initial data load
     await chatStore.loadConversations();
+    chatStore.loadInvites();
 
     // Connect WebSocket (reconnects automatically; resyncs after a reconnect)
     if (token) {
@@ -84,6 +87,7 @@
           wsReady = true;
           if (reconnect) {
             chatStore.loadConversations();
+            chatStore.loadInvites();
             if ($activeConversationId) chatStore.loadMessages($activeConversationId);
           }
         },
@@ -146,6 +150,7 @@
           // Roster or key changed: refresh (the admin's client rotates the key if someone left).
           if (data.group_id) invalidateGroup(data.group_id);
           chatStore.loadConversations();
+          chatStore.loadInvites();
           break;
         }
         case 'read_receipt': {
@@ -302,13 +307,35 @@
     }
   }
 
+  // ── Group invitations ──
+  async function handleAcceptInvite(e) {
+    try {
+      await api.acceptInvite(e.detail.group_id);
+      invalidateGroup(e.detail.group_id);
+      await chatStore.loadInvites();
+      await chatStore.loadConversations();
+      showToast('Joined the group');
+    } catch (err) {
+      showToast('Could not accept: ' + (err.message || ''));
+    }
+  }
+
+  async function handleDeclineInvite(e) {
+    try {
+      await api.declineInvite(e.detail.group_id);
+      await chatStore.loadInvites();
+    } catch (err) {
+      showToast('Could not decline: ' + (err.message || ''));
+    }
+  }
+
   // ── Group creation ──
   async function handleCreateGroup(e) {
     const { name, members } = e.detail;
     try {
       await createGroup(name, members);
       showNewGroup = false;
-      showToast('Group created!');
+      showToast('Group created — invitations sent');
       await chatStore.loadConversations();
     } catch (err) {
       showToast('Failed to create group: ' + (err.message || ''));
@@ -509,6 +536,8 @@
     on:close={handleCloseFilesModal}
     on:jumpToMessage={handleJumpToMessage}
   />
+
+  <InviteBanner invites={$invites} on:accept={handleAcceptInvite} on:decline={handleDeclineInvite} />
 
   <!-- Toast notifications -->
   {#if toasts.length > 0}

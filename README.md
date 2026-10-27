@@ -66,7 +66,7 @@ Optional *Remember this device* keeps the key in that browser's IndexedDB so you
 |---|---|
 | 1:1 message | random per-message key → AES-256-GCM; that key is wrapped (X25519 ECDH → HKDF → AES-GCM) **for the recipient and again for the sender**, so you can re-read what you sent on any device |
 | Group message | AES-256-GCM under the group key for the current *epoch* |
-| Group key | one random key per epoch, sealed to each member and **signed by the admin**; a new epoch is issued whenever someone is removed or leaves, so ex-members cannot read new messages |
+| Group key | one random key per epoch, sealed to each member and **signed by the admin**; a new epoch is issued whenever someone is removed or leaves, so ex-members cannot read new messages. Invitees only receive the key once they accept |
 | Group name | AES-256-GCM under the group key |
 | Files | per-file random key, 1 MiB AES-256-GCM frames with index + "last frame" authenticated (reorder/truncate/tamper is detected) |
 | Authenticity | every message is Ed25519-signed; ids are bound into the encryption so the server cannot move a ciphertext to another conversation or change its sender |
@@ -104,15 +104,16 @@ The automated browser test searches the whole database, write-ahead log, blob di
 - **Per-connection WebSocket queues, write deadlines, keep-alive and a per-user cap**, so one stuck or hostile client cannot freeze the server for everyone.
 - **Rate limits** on every authenticated request and on uploads; a **per-account upload quota** (default 2 GB) stops one user filling the disk.
 - Read receipts only cover messages actually addressed to you; static directories are never listed.
+- **Group invitations must be accepted.** Being added to a group does nothing until you accept: you hold no key, see no messages and get no notifications. Declining deletes the key that was addressed to you. At most 20 invitations can be pending per person.
 
 ### Known limits (read these)
 
 - **The server serves the app's JavaScript.** A malicious server operator could ship a modified web app that leaks keys to them. End-to-end encryption in a web app can never fully remove this; it protects against stolen data, database access, backups and passive snooping, but not against an operator who actively replaces the code. Mitigations: keep the server patched, restrict who has admin access, and consider shipping the app as a separately signed package later.
-- **No forward secrecy.** A stolen account key decrypts that person's past and future messages. There is also **no way to revoke or rotate an account key**: if a device with *Remember this device* is stolen, the account must be abandoned. Only enable it on devices you own and lock.
+- **No forward secrecy, and an account key cannot be rotated.** Anyone who has your account key *and* a copy of the encrypted data (a server backup, or a hostile admin) can decrypt your history. **If a device is lost or stolen: delete that device's WireGuard peer in wg-easy first.** Without a VPN route the thief cannot reach the server at all, so the key on the device is useless for live access (give every device its own peer so this only affects the stolen one). Then treat the account as burned if the thief could also obtain server data, and create a new one.
 - **A hostile server can censor.** It cannot read or forge messages, but it can delete or delay them, withhold a group key rotation (letting a removed member keep a stale key), or show wrong timestamps. The app refuses to *go back* to an older group key than it has seen, but cannot detect a rotation it was never told about.
 - **Metadata is visible** (who talks to whom, when, group membership).
 - **Anyone who gets your account key *is* you.**
-- Handles are plaintext, and anyone signed in can search them. Any signed-in user can add you to a group without asking.
+- Handles are plaintext, and anyone signed in can search them.
 - **A sender's auto-delete timer also removes their messages from the recipient's view** (by design, like disappearing messages).
 - **Operational secrets:** the Cloudflare token in `.env` can change your DNS (scope it to a single zone, ideally a dedicated one). A WireGuard QR code contains that person's private VPN key: send it over a channel you trust, prefer wg-easy's one-time links, and delete the client when someone leaves.
 
@@ -333,7 +334,7 @@ cd web && npm install && node --test test/crypto.test.mjs
 
 # Browser end-to-end (real server, real built app, headless Chromium, 3 users):
 #   register, 1:1 chat, image + file, logout/login, brand-new device, groups,
-#   key rotation on leave, simulated server key-swap, and a search of all server
+#   invitations (accept / decline), key rotation on leave, simulated server key-swap, and a search of all server
 #   storage for plaintext.  See e2e/README.md
 ```
 
