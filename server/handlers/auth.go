@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,14 +104,6 @@ func (h *AuthHandler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.Unlock()
 
-	// Clean old challenges periodically
-	go func() {
-		time.Sleep(6 * time.Minute)
-		h.mu.Lock()
-		delete(h.challenges, challengeHex)
-		h.mu.Unlock()
-	}()
-
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"challenge":          hex.EncodeToString(challenge),
 		"derived_public_key": hex.EncodeToString(user.DerivedPublicKeyEd25519),
@@ -134,21 +127,17 @@ func (h *AuthHandler) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Take the challenge out of the map atomically so it can be used only once,
+	// even if two verify requests race.
 	h.mu.Lock()
 	entry, ok := h.challenges[req.Challenge]
+	delete(h.challenges, req.Challenge)
 	h.mu.Unlock()
 
 	if !ok || time.Now().After(entry.ExpiresAt) {
 		http.Error(w, "Invalid or expired challenge", http.StatusUnauthorized)
 		return
 	}
-
-	// Cleanup used challenge
-	go func() {
-		h.mu.Lock()
-		delete(h.challenges, req.Challenge)
-		h.mu.Unlock()
-	}()
 
 	// Verify Ed25519 signature against the derived public key
 	sig, err := hex.DecodeString(req.Signature)
@@ -174,9 +163,9 @@ func (h *AuthHandler) handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]string{
-		"token":    tokenHex,
-		"user_id":  entry.UserID,
-		"expires":  expiresAt.UTC().Format(time.RFC3339),
+		"token":   tokenHex,
+		"user_id": entry.UserID,
+		"expires": expiresAt.UTC().Format(time.RFC3339),
 	})
 }
 
@@ -187,7 +176,7 @@ func (h *AuthHandler) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := r.Header.Get("Authorization")
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if token == "" {
 		http.Error(w, "Missing token", http.StatusUnauthorized)
 		return

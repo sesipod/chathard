@@ -13,7 +13,7 @@ import (
 // BlobStore handles encrypted blob storage on the filesystem.
 type BlobStore struct {
 	rootDir   string
-	maxBytes  int64 // 0 = unlimited
+	maxBytes  int64        // 0 = unlimited
 	totalUsed atomic.Int64 // in-memory counter, avoids O(n²) filesystem walk
 }
 
@@ -70,9 +70,9 @@ func (bs *BlobStore) WriteBlob(uuid string, data []byte) error {
 
 // WriteBlobChunked handles chunked upload: writes to temp, finalizes on Close.
 type chunkedWriter struct {
-	store     *BlobStore
-	uuid      string
-	tmpFile   *os.File
+	store   *BlobStore
+	uuid    string
+	tmpFile *os.File
 }
 
 // WriteBlobChunked starts a chunked upload. Returns an io.WriteCloser.

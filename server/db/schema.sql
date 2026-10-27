@@ -1,20 +1,16 @@
--- schema.sql: Full SQLite schema for TailChat
--- Matches server/db/migrations/001_init.sql exactly.
--- Used as reference when creating a fresh database;
--- migrations handle upgrades for existing databases.
-
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version     INTEGER PRIMARY KEY,
-    name        TEXT NOT NULL,
-    applied_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
+-- schema.sql: full SQLite schema for TailChat (applied with IF NOT EXISTS on start).
+--
+-- Zero-knowledge rule: every column that holds message content, file content,
+-- file names, group names or private keys holds CIPHERTEXT produced in the
+-- browser. The server only ever sees public keys, random ids, sizes, timing
+-- and who talks to whom.
 
 CREATE TABLE IF NOT EXISTS users (
     id                          TEXT PRIMARY KEY,
     handle                      TEXT NOT NULL UNIQUE,
-    public_key_ed25519          BLOB NOT NULL,
-    public_key_x25519           BLOB NOT NULL,
-    derived_public_key_ed25519  BLOB NOT NULL,
+    public_key_ed25519          BLOB NOT NULL,   -- identity key (signs messages)
+    public_key_x25519           BLOB NOT NULL,   -- encryption key (derived from the identity key)
+    derived_public_key_ed25519  BLOB NOT NULL,   -- login key (challenge-response only)
     created_at                  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -25,55 +21,62 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at  TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS encrypted_key_backups (
-    user_id                TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    recovery_code_hash     TEXT NOT NULL,
-    encrypted_private_key  BLOB NOT NULL,
-    salt                   BLOB NOT NULL,
-    auth_salt              BLOB NOT NULL,
-    used                   INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (user_id, recovery_code_hash)
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-    id                   TEXT PRIMARY KEY,
-    sender_id            TEXT NOT NULL REFERENCES users(id),
-    recipient_id         TEXT REFERENCES users(id),
-    group_id             TEXT REFERENCES groups(id),
-    ciphertext           BLOB NOT NULL,
-    ephemeral_public_key BLOB NOT NULL,
-    nonce                BLOB NOT NULL,
-    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at           TEXT,
-    read_at              TEXT
-);
+-- NOTE: there is deliberately no table holding any key material. The user's
+-- 256-bit account key never leaves their devices; losing it means losing the
+-- account, and nobody (including the server admin) can recover it.
 
 CREATE TABLE IF NOT EXISTS groups (
-    id                      TEXT PRIMARY KEY,
-    encrypted_name          BLOB NOT NULL,
-    encrypted_symmetric_key BLOB NOT NULL,
-    created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+    id              TEXT PRIMARY KEY,
+    encrypted_name  BLOB NOT NULL,
+    created_by      TEXT NOT NULL REFERENCES users(id),
+    epoch           INTEGER NOT NULL DEFAULT 0,   -- current group-key generation
+    needs_rotation  INTEGER NOT NULL DEFAULT 0,   -- set when a member leaves
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS group_members (
-    group_id                  TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    user_id                   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    encrypted_group_key       BLOB NOT NULL,
-    encrypted_member_metadata BLOB NOT NULL,
+    group_id  TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     PRIMARY KEY (group_id, user_id)
 );
 
+-- One row per (group, key generation, member): the group key sealed to that
+-- member's public key and signed by the group admin.
+CREATE TABLE IF NOT EXISTS group_key_envelopes (
+    group_id   TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    epoch      INTEGER NOT NULL,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    signer_id  TEXT NOT NULL REFERENCES users(id),
+    envelope   BLOB NOT NULL,
+    PRIMARY KEY (group_id, epoch, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id            TEXT PRIMARY KEY,
+    sender_id     TEXT NOT NULL REFERENCES users(id),
+    recipient_id  TEXT REFERENCES users(id),
+    group_id      TEXT REFERENCES groups(id),
+    ciphertext    BLOB NOT NULL,   -- versioned envelope, see web/src/lib/crypto/messages.js
+    nonce         BLOB NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at    TEXT,
+    read_at       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_direct ON messages (sender_id, recipient_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_group  ON messages (group_id, created_at);
+
+-- Encrypted file blobs live on disk. Name, type, size and the file key travel
+-- inside the (encrypted) chat message, never here.
 CREATE TABLE IF NOT EXISTS files (
     id                  TEXT PRIMARY KEY,
     uploader_id         TEXT NOT NULL REFERENCES users(id),
     encrypted_blob_path TEXT NOT NULL,
-    encrypted_metadata  BLOB NOT NULL,
     size_bytes          INTEGER NOT NULL,
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at          TEXT,
     target_id           TEXT,
     target_type         TEXT,
-    original_name       TEXT,
     message_id          TEXT
 );
 

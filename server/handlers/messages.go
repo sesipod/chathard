@@ -115,13 +115,28 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Wire format of `ciphertext` (built in web/src/lib/crypto/messages.js):
+//
+//	1:1   : 0x02 | wrapForRecipient(80) | wrapForSender(80) | AES-GCM(body)
+//	group : 0x03 | epoch(4, big endian)                      | AES-GCM(body)
+//
+// The server cannot read any of it; it only checks the shape so garbage and
+// stale-key messages are rejected early.
+const (
+	msgVersionDirect = 0x02
+	msgVersionGroup  = 0x03
+	directHeaderLen  = 1 + 80 + 80
+	groupHeaderLen   = 1 + 4
+	gcmTagLen        = 16
+	maxCiphertext    = 256 << 10
+)
+
 type sendMessageReq struct {
-	RecipientID     string `json:"recipient_id"`
-	GroupID         string `json:"group_id"`
-	Ciphertext      []byte `json:"ciphertext"`
-	EphemeralPubKey []byte `json:"ephemeral_public_key"`
-	Nonce           []byte `json:"nonce"`
-	ExpiresIn       string `json:"expires_in"` // e.g. "1h", "7d"
+	RecipientID string `json:"recipient_id"`
+	GroupID     string `json:"group_id"`
+	Ciphertext  []byte `json:"ciphertext"`
+	Nonce       []byte `json:"nonce"`
+	ExpiresIn   string `json:"expires_in"` // e.g. "1h", "7d"
 }
 
 func (h *MessagesHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
@@ -133,13 +148,44 @@ func (h *MessagesHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Ciphertext) == 0 || len(req.EphemeralPubKey) == 0 || len(req.Nonce) == 0 {
-		http.Error(w, "Missing required fields", http.StatusBadRequest)
+	if len(req.Nonce) != 12 || len(req.Ciphertext) == 0 || len(req.Ciphertext) > maxCiphertext {
+		http.Error(w, "Missing or malformed message", http.StatusBadRequest)
 		return
 	}
-	if req.RecipientID == "" && req.GroupID == "" {
-		http.Error(w, "Must specify recipient_id or group_id", http.StatusBadRequest)
+	if (req.RecipientID == "") == (req.GroupID == "") {
+		http.Error(w, "Specify exactly one of recipient_id or group_id", http.StatusBadRequest)
 		return
+	}
+	if req.GroupID != "" {
+		g, err := h.queries.GetGroup(req.GroupID)
+		if err != nil {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+		if ok, _ := h.queries.IsGroupMember(req.GroupID, userID); !ok {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+		ct := req.Ciphertext
+		if len(ct) < groupHeaderLen+gcmTagLen || ct[0] != msgVersionGroup {
+			http.Error(w, "Malformed group message", http.StatusBadRequest)
+			return
+		}
+		epoch := int(ct[1])<<24 | int(ct[2])<<16 | int(ct[3])<<8 | int(ct[4])
+		if epoch != g.Epoch {
+			// The group key rotated since the sender last synced; client refreshes and retries.
+			http.Error(w, "Stale group key epoch", http.StatusConflict)
+			return
+		}
+	} else {
+		if len(req.Ciphertext) < directHeaderLen+gcmTagLen || req.Ciphertext[0] != msgVersionDirect {
+			http.Error(w, "Malformed message", http.StatusBadRequest)
+			return
+		}
+		if users, err := h.queries.GetUsersByIDs([]string{req.RecipientID}); err != nil || len(users) != 1 {
+			http.Error(w, "Unknown recipient", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Per-message TTL: only set expires_at if the client explicitly sent expires_in
@@ -156,7 +202,7 @@ func (h *MessagesHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 	// Per-user retention is NOT applied here — it's filtered on read via user_retention table
 
 	id := uuid.New().String()
-	if err := h.queries.InsertMessage(id, userID, req.RecipientID, req.GroupID, req.Ciphertext, req.EphemeralPubKey, req.Nonce, expiresAt); err != nil {
+	if err := h.queries.InsertMessage(id, userID, req.RecipientID, req.GroupID, req.Ciphertext, req.Nonce, expiresAt); err != nil {
 		http.Error(w, "Failed to store message", http.StatusInternalServerError)
 		return
 	}
@@ -209,6 +255,13 @@ func (h *MessagesHandler) getMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Apply per-user retention filter
+	if groupID != "" {
+		if ok, _ := h.queries.IsGroupMember(groupID, userID); !ok {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+	}
+
 	var retentionMod string
 	if groupID != "" {
 		ret, err := h.queries.GetUserRetention(userID, groupID, "group")
@@ -299,6 +352,13 @@ func (h *MessagesHandler) updateRetention(w http.ResponseWriter, r *http.Request
 	} else {
 		http.Error(w, "conversation_with or group_id required", http.StatusBadRequest)
 		return
+	}
+
+	if targetType == "group" {
+		if ok, _ := h.queries.IsGroupMember(targetID, userID); !ok {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
 	}
 
 	// Validate format if not clearing
@@ -440,7 +500,10 @@ func (h *MessagesHandler) getConversations(w http.ResponseWriter, r *http.Reques
 		}
 		result = append(result, map[string]interface{}{
 			"id":              g.ID,
-			"name":            g.EncryptedName,
+			"encrypted_name":  g.EncryptedName,
+			"created_by":      g.CreatedBy,
+			"epoch":           g.Epoch,
+			"needs_rotation":  g.NeedsRotation,
 			"last_message_at": g.LastActive,
 			"unread_count":    0,
 			"last_active":     g.LastActive,
@@ -472,6 +535,10 @@ func (h *MessagesHandler) hideMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "message_id is required", http.StatusBadRequest)
 		return
 	}
+	if ok, _ := h.queries.CanAccessMessage(userID, req.MessageID); !ok {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
 
 	if err := h.queries.HideMessage(userID, req.MessageID); err != nil {
 		http.Error(w, "Failed to hide message", http.StatusInternalServerError)
@@ -497,9 +564,15 @@ func (h *MessagesHandler) batchHideMessages(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if len(req.MessageIDs) == 0 {
-		http.Error(w, "message_ids is required", http.StatusBadRequest)
+	if len(req.MessageIDs) == 0 || len(req.MessageIDs) > 500 {
+		http.Error(w, "message_ids is required (max 500)", http.StatusBadRequest)
 		return
+	}
+	for _, id := range req.MessageIDs {
+		if ok, _ := h.queries.CanAccessMessage(userID, id); !ok {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
 	}
 
 	if err := h.queries.HideMessages(userID, req.MessageIDs); err != nil {

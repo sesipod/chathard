@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
+	"github.com/stuckpacket/tailchat/db"
 )
 
 // CtxKey is a context key type.
@@ -30,9 +31,13 @@ type WSPayload struct {
 	RecipientID string `json:"recipient_id,omitempty"`
 	GroupID     string `json:"group_id,omitempty"`
 	UserID      string `json:"user_id,omitempty"`
-	IsTyping    *bool  `json:"is_typing,omitempty"`
-	FromUserID  string `json:"from_user_id,omitempty"`
-	UpToMsgID   string `json:"up_to_msg_id,omitempty"`
+	// ConversationID is what the RECEIVER should open: the sender's id for a
+	// 1:1 chat, the group id for a group. IsGroup is set by the sending client.
+	ConversationID string `json:"conversation_id,omitempty"`
+	IsGroup        bool   `json:"is_group,omitempty"`
+	IsTyping       *bool  `json:"is_typing,omitempty"`
+	FromUserID     string `json:"from_user_id,omitempty"`
+	UpToMsgID      string `json:"up_to_msg_id,omitempty"`
 }
 
 var allowedOrigins = map[string]bool{}
@@ -55,14 +60,16 @@ var upgrader = websocket.Upgrader{
 type Hub struct {
 	mu          sync.RWMutex
 	connections map[string]map[*websocket.Conn]bool // userID -> set of conns
+	queries     *db.Queries                         // group membership lookups
 }
 
 var globalHub *Hub
 
 // InitHub creates the global WebSocket hub.
-func InitHub() {
+func InitHub(queries *db.Queries) {
 	globalHub = &Hub{
 		connections: make(map[string]map[*websocket.Conn]bool),
+		queries:     queries,
 	}
 }
 
@@ -93,54 +100,80 @@ func (h *Hub) RemoveConnection(userID string, conn *websocket.Conn) {
 	}
 }
 
-// NotifyNewMessage sends a new_message notification to relevant users.
+// NotifyNewMessage tells everyone who can see a message to refresh the right
+// conversation: the recipient (or group members) AND the sender's own other
+// devices. The payload carries ids only, never content.
 func (h *Hub) NotifyNewMessage(msgID, senderID, recipientID, groupID string, groupMemberIDs []string) {
-	payload := WSPayload{
-		Type:     WSTypeNewMessage,
-		MsgID:    msgID,
-		SenderID: senderID,
-		GroupID:  groupID,
-	}
+	base := WSPayload{Type: WSTypeNewMessage, MsgID: msgID, SenderID: senderID, GroupID: groupID}
 
-	// Notify recipient for 1:1
 	if recipientID != "" {
-		h.sendToUser(recipientID, payload)
+		toRecipient := base
+		toRecipient.ConversationID = senderID
+		h.sendToUser(recipientID, toRecipient)
+
+		toSender := base
+		toSender.ConversationID = recipientID
+		h.sendToUser(senderID, toSender)
+		return
 	}
-	// Notify all group members (except sender)
 	for _, memberID := range groupMemberIDs {
-		if memberID != senderID {
-			h.sendToUser(memberID, payload)
-		}
+		p := base
+		p.ConversationID = groupID
+		h.sendToUser(memberID, p)
 	}
 }
 
-// NotifyTyping sends a typing indicator.
-func (h *Hub) NotifyTyping(userID, groupID string, isTyping bool) {
-	payload := WSPayload{
-		Type:     WSTypeTyping,
-		UserID:   userID,
-		GroupID:  groupID,
-		IsTyping: &isTyping,
+// NotifyTyping tells the other side(s) of ONE conversation that userID is
+// typing. 1:1 goes to the named recipient only; groups go to the other
+// members, and only if the sender is a member.
+func (h *Hub) NotifyTyping(userID, conversationID string, isGroup, isTyping bool) {
+	if conversationID == "" {
+		return
 	}
-	// For 1:1, hub doesn't know the other party — this is sent to all
-	// group members. The client-side handles filtering.
-	h.broadcast(payload)
+	payload := WSPayload{Type: WSTypeTyping, UserID: userID, IsTyping: &isTyping}
+	if !isGroup {
+		payload.ConversationID = userID
+		h.sendToUser(conversationID, payload)
+		return
+	}
+	if ok, err := h.queries.IsGroupMember(conversationID, userID); err != nil || !ok {
+		return
+	}
+	payload.ConversationID = conversationID
+	payload.GroupID = conversationID
+	h.sendToGroup(conversationID, userID, payload)
 }
 
-// NotifyReadReceipt sends a read receipt.
+// NotifyReadReceipt tells the other side(s) that fromUserID read a conversation.
 func (h *Hub) NotifyReadReceipt(fromUserID, conversationWith, groupID, upToMsgID string) {
 	payload := WSPayload{
-		Type:        WSTypeReadReceipt,
-		FromUserID:  fromUserID,
-		RecipientID: conversationWith,
-		GroupID:     groupID,
-		UpToMsgID:   upToMsgID,
+		Type:       WSTypeReadReceipt,
+		FromUserID: fromUserID,
+		UpToMsgID:  upToMsgID,
 	}
 	if conversationWith != "" {
+		payload.ConversationID = fromUserID
 		h.sendToUser(conversationWith, payload)
 	}
 	if groupID != "" {
-		h.broadcast(payload)
+		if ok, err := h.queries.IsGroupMember(groupID, fromUserID); err != nil || !ok {
+			return
+		}
+		payload.ConversationID = groupID
+		payload.GroupID = groupID
+		h.sendToGroup(groupID, fromUserID, payload)
+	}
+}
+
+func (h *Hub) sendToGroup(groupID, exceptUserID string, payload WSPayload) {
+	ids, err := h.queries.GetGroupMemberIDs(groupID)
+	if err != nil {
+		return
+	}
+	for _, id := range ids {
+		if id != exceptUserID {
+			h.sendToUser(id, payload)
+		}
 	}
 }
 
@@ -154,22 +187,6 @@ func (h *Hub) sendToUser(userID string, payload WSPayload) {
 				conn.Close()
 				delete(conns, conn)
 			}
-		}
-	}
-}
-
-func (h *Hub) broadcast(payload WSPayload) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for userID, conns := range h.connections {
-		for conn := range conns {
-			if err := conn.WriteJSON(payload); err != nil {
-				conn.Close()
-				delete(conns, conn)
-			}
-		}
-		if len(conns) == 0 {
-			delete(h.connections, userID)
 		}
 	}
 }
@@ -201,6 +218,7 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	conn.SetReadLimit(4 << 10)
 	hub.AddConnection(userID, conn)
 	defer hub.RemoveConnection(userID, conn)
 
@@ -220,10 +238,10 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		switch payload.Type {
 		case WSTypeTyping:
-			hub.NotifyTyping(userID, payload.GroupID, payload.IsTyping != nil && *payload.IsTyping)
-		case WSTypeReadReceipt:
-			hub.NotifyReadReceipt(userID, payload.RecipientID, payload.GroupID, payload.UpToMsgID)
+			hub.NotifyTyping(userID, payload.ConversationID, payload.IsGroup, payload.IsTyping != nil && *payload.IsTyping)
 		}
+		// Read receipts are only sent by the REST endpoint, never accepted
+		// from a socket, so a client cannot forge them for other people.
 	}
 
 	log.Printf("ws: user %s disconnected", userID)

@@ -129,7 +129,7 @@ func main() {
 	}()
 
 	// Initialize WebSocket hub
-	handlers.InitHub()
+	handlers.InitHub(queries)
 
 	// Rate limiter
 	rl := middleware.NewRateLimiter(middleware.DefaultRateLimitConfig())
@@ -157,10 +157,6 @@ func main() {
 	// Auth endpoints (rate limited, no session required)
 	authHandler := handlers.NewAuthHandler(queries)
 	mux.Handle("/api/auth/", rl.Middleware("auth", rl.Cfg().Messages)(authHandler))
-
-	// Recover endpoint (rate limited)
-	recoverHandler := handlers.NewRecoverHandler(queries)
-	mux.Handle("/api/recover", rl.Middleware("recover", rl.Cfg().Recovery)(recoverHandler))
 
 	// User search (VPN gate + rate limit, no session required — used during registration)
 	mux.Handle("/api/users/search", rl.Middleware("search", rl.Cfg().UserSearch)(
@@ -199,17 +195,39 @@ func main() {
 	// GET /api/me
 	authMux.HandleFunc("/api/me", func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Context().Value(handlers.CtxKeyUserID).(string)
-		user, remaining, err := queries.GetMe(userID)
+		user, err := queries.GetUserByID(userID)
 		if err != nil {
 			http.Error(w, "User not found", http.StatusNotFound)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":                       user.ID,
-			"handle":                   user.Handle,
-			"public_key_fingerprint":   hex.EncodeToString(user.PublicKeyEd25519[:8]),
-			"recovery_codes_remaining": remaining,
+			"id":                     user.ID,
+			"handle":                 user.Handle,
+			"public_key_ed25519":     user.PublicKeyEd25519,
+			"public_key_x25519":      user.PublicKeyX25519,
+			"public_key_fingerprint": hex.EncodeToString(user.PublicKeyEd25519[:8]),
 		})
+	})
+
+	// GET /api/users/lookup?ids=a,b,c — public keys for people the caller talks to.
+	authMux.HandleFunc("/api/users/lookup", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ids := strings.Split(r.URL.Query().Get("ids"), ",")
+		if len(ids) == 0 || len(ids) > 100 || ids[0] == "" {
+			http.Error(w, "ids required (max 100)", http.StatusBadRequest)
+			return
+		}
+		users, err := queries.GetUsersByIDs(ids)
+		if err != nil {
+			http.Error(w, "Lookup failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"users": users})
 	})
 
 	// Messages
@@ -283,7 +301,7 @@ func main() {
 	var handler http.Handler = mux
 	handler = securityHeaders(handler)
 	handler = corsMiddleware(allowedOrigins)(handler)
-	handler = bodyLimit(10 << 20)(handler) // 10MB max request body
+	handler = bodyLimit(10<<20, parseSize(cfg.Storage.MaxUploadSize)+(2<<20))(handler)
 	handler = gate.Middleware(handler)
 
 	// Start server
@@ -400,11 +418,16 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// bodyLimit restricts the request body size to maxBytes.
-func bodyLimit(maxBytes int64) func(http.Handler) http.Handler {
+// bodyLimit restricts request bodies: maxBytes everywhere except file uploads,
+// which get uploadBytes.
+func bodyLimit(maxBytes, uploadBytes int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+			limit := maxBytes
+			if r.URL.Path == "/api/files/upload" {
+				limit = uploadBytes
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 			next.ServeHTTP(w, r)
 		})
 	}

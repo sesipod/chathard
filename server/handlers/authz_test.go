@@ -1,0 +1,307 @@
+package handlers
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/stuckpacket/tailchat/db"
+	"github.com/stuckpacket/tailchat/storage"
+	_ "modernc.org/sqlite"
+)
+
+type env struct {
+	q      *db.Queries
+	groups *GroupsHandler
+	msgs   *MessagesHandler
+	files  *FilesHandler
+	users  map[string]string // name -> id
+}
+
+func newEnv(t *testing.T) *env {
+	t.Helper()
+	sqlDB, err := sql.Open("sqlite", "file:"+t.Name()+"?mode=memory&cache=shared&_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { sqlDB.Close() })
+	schema, err := os.ReadFile("../db/schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.Exec(string(schema)); err != nil {
+		t.Fatal(err)
+	}
+	q := db.NewQueries(sqlDB)
+	store, err := storage.NewBlobStore(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	InitHub(q)
+	e := &env{q: q, groups: NewGroupsHandler(q), msgs: NewMessagesHandler(q), files: NewFilesHandler(q, store, 1<<20), users: map[string]string{}}
+	for _, name := range []string{"alice", "bob", "carol", "mallory"} {
+		id := uuid.New().String()
+		k := bytes.Repeat([]byte{1}, 32)
+		if err := q.CreateUser(id, name, k, k, k); err != nil {
+			t.Fatal(err)
+		}
+		e.users[name] = id
+	}
+	return e
+}
+
+func (e *env) do(h http.Handler, as, method, path string, body interface{}) *httptest.ResponseRecorder {
+	var rdr *bytes.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rdr = bytes.NewReader(b)
+	} else {
+		rdr = bytes.NewReader(nil)
+	}
+	r := httptest.NewRequest(method, path, rdr)
+	r = r.WithContext(context.WithValue(r.Context(), CtxKeyUserID, e.users[as]))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+func env80() []byte { return bytes.Repeat([]byte{7}, 144) }
+
+// createGroup makes a group owned by alice with alice+bob.
+func (e *env) createGroup(t *testing.T) string {
+	gid := uuid.New().String()
+	w := e.do(e.groups, "alice", "POST", "/api/groups", map[string]interface{}{
+		"id": gid, "encrypted_name": []byte("ciphertext-name"),
+		"members": []map[string]interface{}{
+			{"user_id": e.users["alice"], "envelope": env80()},
+			{"user_id": e.users["bob"], "envelope": env80()},
+		},
+	})
+	if w.Code != 201 {
+		t.Fatalf("create group: %d %s", w.Code, w.Body)
+	}
+	return gid
+}
+
+func groupMsg(epoch int) []byte {
+	ct := []byte{msgVersionGroup, byte(epoch >> 24), byte(epoch >> 16), byte(epoch >> 8), byte(epoch)}
+	return append(ct, bytes.Repeat([]byte{9}, 40)...)
+}
+
+func directMsg() []byte {
+	return append([]byte{msgVersionDirect}, bytes.Repeat([]byte{9}, 160+40)...)
+}
+
+func TestGroupReadAndSendRequireMembership(t *testing.T) {
+	e := newEnv(t)
+	gid := e.createGroup(t)
+
+	for _, p := range []string{"/api/groups/" + gid + "/messages", "/api/groups/" + gid + "/keys"} {
+		if w := e.do(e.groups, "mallory", "GET", p, nil); w.Code != 404 {
+			t.Errorf("non-member GET %s = %d, want 404", p, w.Code)
+		}
+		if w := e.do(e.groups, "bob", "GET", p, nil); w.Code != 200 {
+			t.Errorf("member GET %s = %d, want 200", p, w.Code)
+		}
+	}
+	body := map[string]interface{}{"group_id": gid, "ciphertext": groupMsg(0), "nonce": bytes.Repeat([]byte{1}, 12)}
+	if w := e.do(e.msgs, "mallory", "POST", "/api/messages", body); w.Code != 404 {
+		t.Errorf("non-member send = %d, want 404", w.Code)
+	}
+	if w := e.do(e.msgs, "bob", "POST", "/api/messages", body); w.Code != 201 {
+		t.Errorf("member send = %d, want 201 (%s)", w.Code, "")
+	}
+	if w := e.do(e.msgs, "mallory", "GET", "/api/messages?group_id="+gid, nil); w.Code != 404 {
+		t.Errorf("non-member GET /api/messages?group_id = %d, want 404", w.Code)
+	}
+}
+
+func TestStaleEpochAndMalformedMessagesRejected(t *testing.T) {
+	e := newEnv(t)
+	gid := e.createGroup(t)
+	nonce := bytes.Repeat([]byte{1}, 12)
+
+	if w := e.do(e.msgs, "bob", "POST", "/api/messages", map[string]interface{}{"group_id": gid, "ciphertext": groupMsg(5), "nonce": nonce}); w.Code != 409 {
+		t.Errorf("wrong epoch = %d, want 409", w.Code)
+	}
+	if w := e.do(e.msgs, "bob", "POST", "/api/messages", map[string]interface{}{"group_id": gid, "ciphertext": directMsg(), "nonce": nonce}); w.Code != 400 {
+		t.Errorf("direct-format msg to group = %d, want 400", w.Code)
+	}
+	if w := e.do(e.msgs, "bob", "POST", "/api/messages", map[string]interface{}{"recipient_id": e.users["alice"], "ciphertext": []byte("hello plaintext"), "nonce": nonce}); w.Code != 400 {
+		t.Errorf("plaintext-looking direct msg = %d, want 400", w.Code)
+	}
+	if w := e.do(e.msgs, "bob", "POST", "/api/messages", map[string]interface{}{"recipient_id": e.users["alice"], "ciphertext": directMsg(), "nonce": []byte{1}}); w.Code != 400 {
+		t.Errorf("short nonce = %d, want 400", w.Code)
+	}
+	if w := e.do(e.msgs, "bob", "POST", "/api/messages", map[string]interface{}{"recipient_id": e.users["alice"], "ciphertext": directMsg(), "nonce": nonce}); w.Code != 201 {
+		t.Errorf("valid direct msg = %d, want 201", w.Code)
+	}
+	if w := e.do(e.msgs, "bob", "POST", "/api/messages", map[string]interface{}{"recipient_id": uuid.New().String(), "ciphertext": directMsg(), "nonce": nonce}); w.Code != 400 {
+		t.Errorf("unknown recipient = %d, want 400", w.Code)
+	}
+}
+
+func TestOnlyAdminChangesMembership(t *testing.T) {
+	e := newEnv(t)
+	gid := e.createGroup(t)
+
+	add := map[string]interface{}{"user_id": e.users["carol"], "epoch": 0, "envelope": env80()}
+	if w := e.do(e.groups, "bob", "POST", "/api/groups/"+gid+"/members", add); w.Code != 403 {
+		t.Errorf("non-admin add = %d, want 403", w.Code)
+	}
+	if w := e.do(e.groups, "mallory", "POST", "/api/groups/"+gid+"/members", add); w.Code != 404 {
+		t.Errorf("outsider add = %d, want 404", w.Code)
+	}
+	if w := e.do(e.groups, "alice", "POST", "/api/groups/"+gid+"/members", add); w.Code != 204 {
+		t.Errorf("admin add = %d, want 204", w.Code)
+	}
+	rm := map[string]interface{}{"user_id": e.users["carol"], "epoch": 1, "encrypted_name": []byte("n2"),
+		"members": []map[string]interface{}{{"user_id": e.users["alice"], "envelope": env80()}, {"user_id": e.users["bob"], "envelope": env80()}}}
+	if w := e.do(e.groups, "bob", "POST", "/api/groups/"+gid+"/remove", rm); w.Code != 403 {
+		t.Errorf("non-admin remove = %d, want 403", w.Code)
+	}
+	// envelope list that still includes the removed member must be refused
+	bad := map[string]interface{}{"user_id": e.users["carol"], "epoch": 1, "encrypted_name": []byte("n2"),
+		"members": []map[string]interface{}{{"user_id": e.users["alice"], "envelope": env80()}, {"user_id": e.users["bob"], "envelope": env80()}, {"user_id": e.users["carol"], "envelope": env80()}}}
+	if w := e.do(e.groups, "alice", "POST", "/api/groups/"+gid+"/remove", bad); w.Code != 400 {
+		t.Errorf("remove leaving removed member's envelope = %d, want 400", w.Code)
+	}
+	if w := e.do(e.groups, "alice", "POST", "/api/groups/"+gid+"/remove", rm); w.Code != 204 {
+		t.Errorf("admin remove+rotate = %d, want 204", w.Code)
+	}
+	if w := e.do(e.groups, "carol", "GET", "/api/groups/"+gid+"/messages", nil); w.Code != 404 {
+		t.Errorf("removed member read = %d, want 404", w.Code)
+	}
+	// old epoch is now stale for senders
+	nonce := bytes.Repeat([]byte{1}, 12)
+	if w := e.do(e.msgs, "bob", "POST", "/api/messages", map[string]interface{}{"group_id": gid, "ciphertext": groupMsg(0), "nonce": nonce}); w.Code != 409 {
+		t.Errorf("old-epoch send after rotation = %d, want 409", w.Code)
+	}
+	if w := e.do(e.msgs, "bob", "POST", "/api/messages", map[string]interface{}{"group_id": gid, "ciphertext": groupMsg(1), "nonce": nonce}); w.Code != 201 {
+		t.Errorf("new-epoch send = %d, want 201", w.Code)
+	}
+	// replaying the same rotation (same epoch) is refused
+	if w := e.do(e.groups, "alice", "POST", "/api/groups/"+gid+"/rotate", map[string]interface{}{"epoch": 1, "encrypted_name": []byte("n"), "members": rm["members"]}); w.Code != 409 {
+		t.Errorf("rotation replay = %d, want 409", w.Code)
+	}
+}
+
+func TestLeaveFlagsRotationAndAdminCannotLeave(t *testing.T) {
+	e := newEnv(t)
+	gid := e.createGroup(t)
+	if w := e.do(e.groups, "alice", "DELETE", "/api/groups/"+gid+"/members/"+e.users["alice"], nil); w.Code != 400 {
+		t.Errorf("admin leave = %d, want 400", w.Code)
+	}
+	if w := e.do(e.groups, "bob", "DELETE", "/api/groups/"+gid+"/members/"+e.users["alice"], nil); w.Code != 403 {
+		t.Errorf("kick via leave = %d, want 403", w.Code)
+	}
+	if w := e.do(e.groups, "bob", "DELETE", "/api/groups/"+gid+"/members/"+e.users["bob"], nil); w.Code != 204 {
+		t.Errorf("leave = %d, want 204", w.Code)
+	}
+	g, _ := e.q.GetGroup(gid)
+	if !g.NeedsRotation {
+		t.Error("group should be flagged for rotation after a member leaves")
+	}
+}
+
+func TestMessageHideRequiresAccess(t *testing.T) {
+	e := newEnv(t)
+	nonce := bytes.Repeat([]byte{1}, 12)
+	w := e.do(e.msgs, "alice", "POST", "/api/messages", map[string]interface{}{"recipient_id": e.users["bob"], "ciphertext": directMsg(), "nonce": nonce})
+	var out struct{ ID string }
+	json.Unmarshal(w.Body.Bytes(), &out)
+	if w := e.do(e.msgs, "mallory", "POST", "/api/messages/hide", map[string]string{"message_id": out.ID}); w.Code != 404 {
+		t.Errorf("outsider hide = %d, want 404", w.Code)
+	}
+	if w := e.do(e.msgs, "bob", "POST", "/api/messages/hide", map[string]string{"message_id": out.ID}); w.Code != 204 {
+		t.Errorf("recipient hide = %d, want 204", w.Code)
+	}
+}
+
+func upload(e *env, as, targetID, targetType string) *httptest.ResponseRecorder {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "blob")
+	fw.Write(bytes.Repeat([]byte{3}, 100))
+	mw.WriteField("target_id", targetID)
+	mw.WriteField("target_type", targetType)
+	mw.Close()
+	r := httptest.NewRequest("POST", "/api/files/upload", &buf)
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	r = r.WithContext(context.WithValue(r.Context(), CtxKeyUserID, e.users[as]))
+	w := httptest.NewRecorder()
+	e.files.ServeHTTP(w, r)
+	return w
+}
+
+func TestFileAccessFollowsConversation(t *testing.T) {
+	e := newEnv(t)
+	gid := e.createGroup(t)
+
+	if w := upload(e, "mallory", gid, "group"); w.Code != 404 {
+		t.Errorf("outsider upload to group = %d, want 404", w.Code)
+	}
+	w := upload(e, "alice", gid, "group")
+	if w.Code != 201 {
+		t.Fatalf("member upload = %d %s", w.Code, w.Body)
+	}
+	var up struct {
+		FileID string `json:"file_id"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &up)
+
+	if w := e.do(e.files, "bob", "GET", "/api/files/"+up.FileID, nil); w.Code != 200 {
+		t.Errorf("group member download = %d, want 200", w.Code)
+	}
+	if w := e.do(e.files, "mallory", "GET", "/api/files/"+up.FileID, nil); w.Code != 404 {
+		t.Errorf("outsider download = %d, want 404", w.Code)
+	}
+
+	// 1:1: only the sender and the addressed recipient may fetch it
+	w = upload(e, "alice", e.users["bob"], "direct")
+	json.Unmarshal(w.Body.Bytes(), &up)
+	if w := e.do(e.files, "bob", "GET", "/api/files/"+up.FileID, nil); w.Code != 200 {
+		t.Errorf("recipient download = %d, want 200", w.Code)
+	}
+	if w := e.do(e.files, "carol", "GET", "/api/files/"+up.FileID, nil); w.Code != 404 {
+		t.Errorf("third-party download = %d, want 404", w.Code)
+	}
+	if w := e.do(e.files, "bob", "DELETE", "/api/files/"+up.FileID, nil); w.Code != 404 {
+		t.Errorf("non-uploader delete = %d, want 404", w.Code)
+	}
+}
+
+func TestRegisterValidation(t *testing.T) {
+	e := newEnv(t)
+	h := NewRegisterHandler(e.q)
+	k := bytes.Repeat([]byte{5}, 32)
+	post := func(handle string, ed []byte) int {
+		b, _ := json.Marshal(map[string]interface{}{"handle": handle, "public_key_ed25519": ed, "public_key_x25519": k, "derived_public_key_ed25519": k})
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("POST", "/api/register", bytes.NewReader(b)))
+		return w.Code
+	}
+	if c := post("dave", k); c != 201 {
+		t.Errorf("valid = %d", c)
+	}
+	if c := post("dave", k); c != 409 {
+		t.Errorf("duplicate = %d, want 409", c)
+	}
+	if c := post("x", k); c != 400 {
+		t.Errorf("short handle = %d, want 400", c)
+	}
+	if c := post("bad handle!", k); c != 400 {
+		t.Errorf("bad chars = %d, want 400", c)
+	}
+	if c := post("erin", k[:10]); c != 400 {
+		t.Errorf("short key = %d, want 400", c)
+	}
+}

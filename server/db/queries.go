@@ -36,20 +36,6 @@ func (q *Queries) GetUserByID(id string) (*UserRow, error) {
 	return scanUser(row)
 }
 
-// GetMe returns user + recovery codes remaining.
-func (q *Queries) GetMe(id string) (*UserRow, int, error) {
-	u, err := q.GetUserByID(id)
-	if err != nil {
-		return nil, 0, err
-	}
-	var remaining int
-	err = q.db.QueryRow(`SELECT COUNT(*) FROM encrypted_key_backups WHERE user_id = ? AND used = 0`, id).Scan(&remaining)
-	if err != nil {
-		return nil, 0, err
-	}
-	return u, remaining, nil
-}
-
 func (q *Queries) SearchUsers(query string, limit int) ([]UserRow, error) {
 	rows, err := q.db.Query(`SELECT id, handle, public_key_ed25519, public_key_x25519, derived_public_key_ed25519, created_at FROM users WHERE handle LIKE ? LIMIT ?`, "%"+query+"%", limit)
 	if err != nil {
@@ -96,15 +82,15 @@ func (q *Queries) DeleteSession(tokenHash string) error {
 
 // ─── Messages ─────────────────────────────────────────────────────────────────
 
-func (q *Queries) InsertMessage(id, senderID, recipientID, groupID string, ciphertext, ephemeralPubKey, nonce []byte, expiresAt *time.Time) error {
+func (q *Queries) InsertMessage(id, senderID, recipientID, groupID string, ciphertext, nonce []byte, expiresAt *time.Time) error {
 	var exp *string
 	if expiresAt != nil {
 		s := expiresAt.UTC().Format(time.RFC3339)
 		exp = &s
 	}
 	_, err := q.db.Exec(
-		`INSERT INTO messages (id, sender_id, recipient_id, group_id, ciphertext, ephemeral_public_key, nonce, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, senderID, nullStr(recipientID), nullStr(groupID), ciphertext, ephemeralPubKey, nonce, exp,
+		`INSERT INTO messages (id, sender_id, recipient_id, group_id, ciphertext, nonce, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, senderID, nullStr(recipientID), nullStr(groupID), ciphertext, nonce, exp,
 	)
 	return err
 }
@@ -115,7 +101,7 @@ func (q *Queries) GetDirectMessages(userID, otherUserID string, after, before *t
 		limit = 50
 	}
 
-	query := `SELECT id, sender_id, recipient_id, group_id, ciphertext, ephemeral_public_key, nonce, created_at, expires_at, read_at FROM messages WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))`
+	query := `SELECT id, sender_id, recipient_id, group_id, ciphertext, nonce, created_at, expires_at, read_at FROM messages WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))`
 	var args []interface{}
 	args = append(args, userID, otherUserID, otherUserID, userID)
 
@@ -153,7 +139,7 @@ func (q *Queries) GetMessages(recipientID, groupID string, after, before *time.T
 		limit = 50
 	}
 
-	query := `SELECT id, sender_id, recipient_id, group_id, ciphertext, ephemeral_public_key, nonce, created_at, expires_at, read_at FROM messages WHERE `
+	query := `SELECT id, sender_id, recipient_id, group_id, ciphertext, nonce, created_at, expires_at, read_at FROM messages WHERE `
 	var args []interface{}
 
 	if groupID != "" {
@@ -348,7 +334,7 @@ func (q *Queries) GetConversations(userID string) ([]ConversationRow, error) {
 		SELECT
 			u.id,
 			u.handle,
-			COALESCE(SUBSTR(HEX(m.ciphertext), 1, 32), '') AS last_msg,
+			'' AS last_msg,
 			COALESCE((SELECT COUNT(*) FROM messages WHERE recipient_id = ? AND sender_id = u.id AND read_at IS NULL), 0) AS unread,
 			COALESCE(MAX(m.created_at), '') AS last_active,
 			MAX(CASE WHEN m.sender_id = ? THEN m.expires_at END) AS expires_at
@@ -380,25 +366,149 @@ func (q *Queries) GetConversations(userID string) ([]ConversationRow, error) {
 
 // ─── Groups ───────────────────────────────────────────────────────────────────
 
-func (q *Queries) CreateGroup(id string, encryptedName, encryptedSymmetricKey []byte) error {
-	_, err := q.db.Exec(
-		`INSERT INTO groups (id, encrypted_name, encrypted_symmetric_key) VALUES (?, ?, ?)`,
-		id, encryptedName, encryptedSymmetricKey,
-	)
-	return err
+// GroupEnvelope is a group key sealed to one member and signed by the admin.
+type GroupEnvelope struct {
+	UserID   string `json:"user_id"`
+	SignerID string `json:"signer_id"`
+	Epoch    int    `json:"epoch"`
+	Envelope []byte `json:"envelope"`
 }
 
-func (q *Queries) AddMember(groupID, userID string, encryptedGroupKey, encryptedMemberMetadata []byte) error {
-	_, err := q.db.Exec(
-		`INSERT INTO group_members (group_id, user_id, encrypted_group_key, encrypted_member_metadata) VALUES (?, ?, ?, ?)`,
-		groupID, userID, encryptedGroupKey, encryptedMemberMetadata,
-	)
-	return err
+// GroupInfo is the server-side view of a group (name is ciphertext).
+type GroupInfo struct {
+	ID            string `json:"id"`
+	EncryptedName []byte `json:"encrypted_name"`
+	CreatedBy     string `json:"created_by"`
+	Epoch         int    `json:"epoch"`
+	NeedsRotation bool   `json:"needs_rotation"`
+	CreatedAt     string `json:"created_at"`
 }
 
-func (q *Queries) RemoveMember(groupID, userID string) error {
-	_, err := q.db.Exec(`DELETE FROM group_members WHERE group_id = ? AND user_id = ?`, groupID, userID)
-	return err
+// CreateGroupWithMembers creates a group at epoch 0 with its creator, members
+// and their key envelopes in one transaction.
+func (q *Queries) CreateGroupWithMembers(id string, encryptedName []byte, creatorID string, envelopes []GroupEnvelope) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO groups (id, encrypted_name, created_by, epoch) VALUES (?, ?, ?, 0)`, id, encryptedName, creatorID); err != nil {
+		return err
+	}
+	for _, e := range envelopes {
+		if _, err := tx.Exec(`INSERT INTO group_members (group_id, user_id) VALUES (?, ?)`, id, e.UserID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO group_key_envelopes (group_id, epoch, user_id, signer_id, envelope) VALUES (?, 0, ?, ?, ?)`,
+			id, e.UserID, e.SignerID, e.Envelope); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (q *Queries) GetGroup(id string) (*GroupInfo, error) {
+	g := &GroupInfo{}
+	var nr int
+	err := q.db.QueryRow(`SELECT id, encrypted_name, created_by, epoch, needs_rotation, created_at FROM groups WHERE id = ?`, id).
+		Scan(&g.ID, &g.EncryptedName, &g.CreatedBy, &g.Epoch, &nr, &g.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	g.NeedsRotation = nr != 0
+	normalizeTimestamp(&g.CreatedAt)
+	return g, nil
+}
+
+func (q *Queries) IsGroupMember(groupID, userID string) (bool, error) {
+	var n int
+	err := q.db.QueryRow(`SELECT COUNT(*) FROM group_members WHERE group_id = ? AND user_id = ?`, groupID, userID).Scan(&n)
+	return n > 0, err
+}
+
+// AddGroupMember adds a member and stores their envelope for the current epoch.
+func (q *Queries) AddGroupMember(groupID string, e GroupEnvelope) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO group_members (group_id, user_id) VALUES (?, ?)`, groupID, e.UserID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO group_key_envelopes (group_id, epoch, user_id, signer_id, envelope)
+		SELECT ?, epoch, ?, ?, ? FROM groups WHERE id = ? AND epoch = ?`,
+		groupID, e.UserID, e.SignerID, e.Envelope, groupID, e.Epoch); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// LeaveGroup removes a member who left voluntarily and flags the group so the
+// admin's client rotates the key.
+func (q *Queries) LeaveGroup(groupID, userID string) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM group_members WHERE group_id = ? AND user_id = ?`, groupID, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE groups SET needs_rotation = 1 WHERE id = ?`, groupID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RotateGroup moves the group to a new key generation. removeUserID (optional)
+// is dropped first. envelopes must cover exactly the remaining members; the
+// caller validates that against GetGroupMemberIDs before calling.
+func (q *Queries) RotateGroup(groupID string, newEpoch int, removeUserID string, encryptedName []byte, envelopes []GroupEnvelope) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if removeUserID != "" {
+		if _, err := tx.Exec(`DELETE FROM group_members WHERE group_id = ? AND user_id = ?`, groupID, removeUserID); err != nil {
+			return err
+		}
+	}
+	res, err := tx.Exec(`UPDATE groups SET epoch = ?, encrypted_name = ?, needs_rotation = 0 WHERE id = ? AND epoch = ?`,
+		newEpoch, encryptedName, groupID, newEpoch-1)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return sql.ErrNoRows
+	}
+	for _, e := range envelopes {
+		if _, err := tx.Exec(`INSERT INTO group_key_envelopes (group_id, epoch, user_id, signer_id, envelope) VALUES (?, ?, ?, ?, ?)`,
+			groupID, newEpoch, e.UserID, e.SignerID, e.Envelope); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// GetMemberEnvelopes returns every key envelope addressed to userID in a group
+// (all epochs), so a fresh device can decrypt the whole history it is entitled to.
+func (q *Queries) GetMemberEnvelopes(groupID, userID string) ([]GroupEnvelope, error) {
+	rows, err := q.db.Query(`SELECT epoch, signer_id, envelope FROM group_key_envelopes WHERE group_id = ? AND user_id = ? ORDER BY epoch`, groupID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []GroupEnvelope{}
+	for rows.Next() {
+		e := GroupEnvelope{UserID: userID}
+		if err := rows.Scan(&e.Epoch, &e.SignerID, &e.Envelope); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func (q *Queries) GetGroupMemberIDs(groupID string) ([]string, error) {
@@ -418,48 +528,11 @@ func (q *Queries) GetGroupMemberIDs(groupID string) ([]string, error) {
 	return ids, rows.Err()
 }
 
-func (q *Queries) GetGroupMessages(groupID string, after, before *time.Time, limit int) ([]MessageRow, error) {
-	return q.GetMessages("", groupID, after, before, limit)
-}
-
-func (q *Queries) GetUserGroups(userID string) ([]GroupRow, error) {
-	rows, err := q.db.Query(`
-		SELECT g.id, g.encrypted_name, g.encrypted_symmetric_key, g.created_at
-		FROM groups g
-		INNER JOIN group_members gm ON gm.group_id = g.id
-		WHERE gm.user_id = ?
-		ORDER BY g.created_at DESC
-	`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var groups []GroupRow
-	for rows.Next() {
-		var g GroupRow
-		if err := rows.Scan(&g.ID, &g.EncryptedName, &g.EncryptedSymmetricKey, &g.CreatedAt); err != nil {
-			return nil, err
-		}
-		groups = append(groups, g)
-	}
-	return groups, rows.Err()
-}
-
-// GroupWithActivity extends GroupRow with the latest message timestamp.
-type GroupWithActivity struct {
-	ID                    string
-	EncryptedName         []byte
-	EncryptedSymmetricKey []byte
-	CreatedAt             string
-	LastActive            string
-}
-
-// GetUserGroupsWithActivity returns groups the user is a member of,
-// including the timestamp of the latest group message (or group creation time).
+// GetUserGroupsWithActivity returns groups the user belongs to, with the
+// timestamp of the latest message (or creation time).
 func (q *Queries) GetUserGroupsWithActivity(userID string) ([]GroupWithActivity, error) {
-	query := `
-		SELECT g.id, g.encrypted_name, g.encrypted_symmetric_key, g.created_at,
+	rows, err := q.db.Query(`
+		SELECT g.id, g.encrypted_name, g.created_by, g.epoch, g.needs_rotation, g.created_at,
 		       COALESCE(MAX(m.created_at), g.created_at) AS last_active
 		FROM groups g
 		INNER JOIN group_members gm ON gm.group_id = g.id
@@ -467,8 +540,7 @@ func (q *Queries) GetUserGroupsWithActivity(userID string) ([]GroupWithActivity,
 		WHERE gm.user_id = ?
 		GROUP BY g.id
 		ORDER BY last_active DESC
-	`
-	rows, err := q.db.Query(query, userID)
+	`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -477,35 +549,52 @@ func (q *Queries) GetUserGroupsWithActivity(userID string) ([]GroupWithActivity,
 	var groups []GroupWithActivity
 	for rows.Next() {
 		var g GroupWithActivity
-		if err := rows.Scan(&g.ID, &g.EncryptedName, &g.EncryptedSymmetricKey, &g.CreatedAt, &g.LastActive); err != nil {
+		var nr int
+		if err := rows.Scan(&g.ID, &g.EncryptedName, &g.CreatedBy, &g.Epoch, &nr, &g.CreatedAt, &g.LastActive); err != nil {
 			return nil, err
 		}
+		g.NeedsRotation = nr != 0
 		normalizeTimestamp(&g.LastActive)
 		groups = append(groups, g)
 	}
 	return groups, rows.Err()
 }
 
+// GroupWithActivity extends GroupInfo with the latest message timestamp.
+type GroupWithActivity struct {
+	GroupInfo
+	LastActive string
+}
+
 // ─── Files ────────────────────────────────────────────────────────────────────
 
-func (q *Queries) InsertFile(id, uploaderID, encryptedBlobPath string, encryptedMetadata []byte, sizeBytes int64, expiresAt *time.Time, targetID, targetType, originalName, messageID string) error {
+func (q *Queries) InsertFile(id, uploaderID, encryptedBlobPath string, sizeBytes int64, expiresAt *time.Time, targetID, targetType string) error {
 	var exp *string
 	if expiresAt != nil {
 		s := expiresAt.UTC().Format(time.RFC3339)
 		exp = &s
 	}
 	_, err := q.db.Exec(
-		`INSERT INTO files (id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, expires_at, target_id, target_type, original_name, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, uploaderID, encryptedBlobPath, encryptedMetadata, sizeBytes, exp, nullStr(targetID), nullStr(targetType), nullStr(originalName), nullStr(messageID),
+		`INSERT INTO files (id, uploader_id, encrypted_blob_path, size_bytes, expires_at, target_id, target_type) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, uploaderID, encryptedBlobPath, sizeBytes, exp, nullStr(targetID), nullStr(targetType),
 	)
 	return err
 }
 
-func (q *Queries) GetConversationFiles(targetID, targetType string) ([]FileRow, error) {
-	rows, err := q.db.Query(
-		`SELECT id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, created_at, expires_at, target_id, target_type FROM files WHERE target_id = ? AND target_type = ? ORDER BY created_at DESC`,
-		targetID, targetType,
-	)
+// GetConversationFiles lists blob records for one conversation. For a 1:1 chat
+// that is files I sent them plus files they sent me; for a group, every file
+// addressed to the group.
+func (q *Queries) GetConversationFiles(userID, targetID, targetType string) ([]FileRow, error) {
+	const cols = `id, uploader_id, size_bytes, created_at, expires_at, COALESCE(target_id, ''), COALESCE(target_type, ''), COALESCE(message_id, '')`
+	var rows *sql.Rows
+	var err error
+	if targetType == "direct" {
+		rows, err = q.db.Query(`SELECT `+cols+` FROM files WHERE target_type = 'direct' AND
+			((uploader_id = ? AND target_id = ?) OR (uploader_id = ? AND target_id = ?)) ORDER BY created_at DESC`,
+			userID, targetID, targetID, userID)
+	} else {
+		rows, err = q.db.Query(`SELECT `+cols+` FROM files WHERE target_type = 'group' AND target_id = ? ORDER BY created_at DESC`, targetID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -513,30 +602,32 @@ func (q *Queries) GetConversationFiles(targetID, targetType string) ([]FileRow, 
 
 	var files []FileRow
 	for rows.Next() {
-		f := &FileRow{}
+		f := FileRow{}
 		var createdAt string
 		var expiresAt *string
-		if err := rows.Scan(&f.ID, &f.UploaderID, &f.EncryptedBlobPath, &f.EncryptedMetadata, &f.SizeBytes, &createdAt, &expiresAt, &f.TargetID, &f.TargetType); err != nil {
+		if err := rows.Scan(&f.ID, &f.UploaderID, &f.SizeBytes, &createdAt, &expiresAt, &f.TargetID, &f.TargetType, &f.MessageID); err != nil {
 			return nil, err
 		}
+		normalizeTimestamp(&createdAt)
 		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		if expiresAt != nil {
 			t, _ := time.Parse(time.RFC3339, *expiresAt)
 			f.ExpiresAt = &t
 		}
-		files = append(files, *f)
+		files = append(files, f)
 	}
 	return files, rows.Err()
 }
 
 func (q *Queries) GetFile(id string) (*FileRow, error) {
-	row := q.db.QueryRow(`SELECT id, uploader_id, encrypted_blob_path, encrypted_metadata, size_bytes, created_at, expires_at FROM files WHERE id = ?`, id)
+	row := q.db.QueryRow(`SELECT id, uploader_id, size_bytes, created_at, expires_at, COALESCE(target_id, ''), COALESCE(target_type, '') FROM files WHERE id = ?`, id)
 	f := &FileRow{}
 	var createdAt string
 	var expiresAt *string
-	if err := row.Scan(&f.ID, &f.UploaderID, &f.EncryptedBlobPath, &f.EncryptedMetadata, &f.SizeBytes, &createdAt, &expiresAt); err != nil {
+	if err := row.Scan(&f.ID, &f.UploaderID, &f.SizeBytes, &createdAt, &expiresAt, &f.TargetID, &f.TargetType); err != nil {
 		return nil, err
 	}
+	normalizeTimestamp(&createdAt)
 	f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	if expiresAt != nil {
 		t, _ := time.Parse(time.RFC3339, *expiresAt)
@@ -583,60 +674,43 @@ func (q *Queries) LinkFileToMessage(fileID, messageID string) error {
 	return err
 }
 
-// ─── Recovery ─────────────────────────────────────────────────────────────────
+// ─── Access checks ────────────────────────────────────────────────────────────
 
-func (q *Queries) InsertRecoveryBackup(userID, recoveryCodeHash string, encryptedPrivateKey, salt, authSalt []byte) error {
-	_, err := q.db.Exec(
-		`INSERT INTO encrypted_key_backups (user_id, recovery_code_hash, encrypted_private_key, salt, auth_salt) VALUES (?, ?, ?, ?, ?)`,
-		userID, recoveryCodeHash, encryptedPrivateKey, salt, authSalt,
-	)
-	return err
+// CanAccessMessage reports whether userID is the sender, the 1:1 recipient or
+// a member of the message's group.
+func (q *Queries) CanAccessMessage(userID, messageID string) (bool, error) {
+	var n int
+	err := q.db.QueryRow(`
+		SELECT COUNT(*) FROM messages m
+		WHERE m.id = ? AND (m.sender_id = ? OR m.recipient_id = ?
+		   OR EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id = m.group_id AND gm.user_id = ?))`,
+		messageID, userID, userID, userID).Scan(&n)
+	return n > 0, err
 }
 
-func (q *Queries) GetRecoveryBackup(userID, recoveryCodeHash string) ([]byte, []byte, error) {
-	var encryptedKey, salt []byte
-	err := q.db.QueryRow(
-		`SELECT encrypted_private_key, salt FROM encrypted_key_backups WHERE user_id = ? AND recovery_code_hash = ? AND used = 0`,
-		userID, recoveryCodeHash,
-	).Scan(&encryptedKey, &salt)
-	if err != nil {
-		return nil, nil, err
+// GetUsersByIDs returns the public records of the given users.
+func (q *Queries) GetUsersByIDs(ids []string) ([]UserRow, error) {
+	if len(ids) == 0 {
+		return []UserRow{}, nil
 	}
-	return encryptedKey, salt, nil
-}
-
-func (q *Queries) MarkCodeUsed(userID, recoveryCodeHash string) error {
-	_, err := q.db.Exec(`UPDATE encrypted_key_backups SET used = 1 WHERE user_id = ? AND recovery_code_hash = ?`, userID, recoveryCodeHash)
-	return err
-}
-
-// GetUnusedRecoveryBackups returns all unused recovery backup entries for a user.
-// Used for constant-time comparison in the recover handler.
-func (q *Queries) GetUnusedRecoveryBackups(userID string) ([]RecoveryBackupRow, error) {
-	rows, err := q.db.Query(
-		`SELECT recovery_code_hash, encrypted_private_key, salt, auth_salt FROM encrypted_key_backups WHERE user_id = ? AND used = 0`,
-		userID,
-	)
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := q.db.Query(`SELECT id, handle, public_key_ed25519, public_key_x25519, derived_public_key_ed25519, created_at FROM users WHERE id IN (?`+strings.Repeat(`,?`, len(ids)-1)+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var backups []RecoveryBackupRow
+	out := []UserRow{}
 	for rows.Next() {
-		var b RecoveryBackupRow
-		if err := rows.Scan(&b.RecoveryCodeHash, &b.EncryptedPrivateKey, &b.Salt, &b.AuthSalt); err != nil {
+		u, err := scanUser(rows)
+		if err != nil {
 			return nil, err
 		}
-		backups = append(backups, b)
+		out = append(out, *u)
 	}
-	return backups, rows.Err()
-}
-
-func (q *Queries) GetRecoveryCodesRemaining(userID string) (int, error) {
-	var count int
-	err := q.db.QueryRow(`SELECT COUNT(*) FROM encrypted_key_backups WHERE user_id = ? AND used = 0`, userID).Scan(&count)
-	return count, err
+	return out, rows.Err()
 }
 
 // ─── Per-User Retention ───────────────────────────────────────────────────────
@@ -678,7 +752,7 @@ func (q *Queries) GetDirectMessagesWithRetention(userID, otherUserID string, aft
 		limit = 50
 	}
 
-	query := `SELECT id, sender_id, recipient_id, group_id, ciphertext, ephemeral_public_key, nonce, created_at, expires_at, read_at FROM messages WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))`
+	query := `SELECT id, sender_id, recipient_id, group_id, ciphertext, nonce, created_at, expires_at, read_at FROM messages WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))`
 	var args []interface{}
 	args = append(args, userID, otherUserID, otherUserID, userID)
 
@@ -725,7 +799,7 @@ func (q *Queries) GetGroupMessagesWithRetention(userID, groupID string, after, b
 		limit = 50
 	}
 
-	query := `SELECT id, sender_id, recipient_id, group_id, ciphertext, ephemeral_public_key, nonce, created_at, expires_at, read_at FROM messages WHERE group_id = ?`
+	query := `SELECT id, sender_id, recipient_id, group_id, ciphertext, nonce, created_at, expires_at, read_at FROM messages WHERE group_id = ?`
 	var args []interface{}
 	args = append(args, groupID)
 
@@ -964,7 +1038,7 @@ type UserRow struct {
 	Handle                  string `json:"handle"`
 	PublicKeyEd25519        []byte `json:"public_key_ed25519"`
 	PublicKeyX25519         []byte `json:"public_key_x25519"`
-	DerivedPublicKeyEd25519 []byte `json:"derived_public_key_ed25519"`
+	DerivedPublicKeyEd25519 []byte `json:"-"`
 	CreatedAt               string `json:"created_at"`
 }
 
@@ -976,44 +1050,26 @@ type SessionRow struct {
 }
 
 type MessageRow struct {
-	ID              string  `json:"id"`
-	SenderID        string  `json:"sender_id"`
-	RecipientID     *string `json:"recipient_id"`
-	GroupID         *string `json:"group_id"`
-	Ciphertext      []byte  `json:"ciphertext"`
-	EphemeralPubKey []byte  `json:"ephemeral_public_key"`
-	Nonce           []byte  `json:"nonce"`
-	CreatedAt       string  `json:"created_at"`
-	ExpiresAt       *string `json:"expires_at"`
-	ReadAt          *string `json:"read_at"`
-}
-
-type GroupRow struct {
-	ID                    string
-	EncryptedName         []byte
-	EncryptedSymmetricKey []byte
-	CreatedAt             string
+	ID          string  `json:"id"`
+	SenderID    string  `json:"sender_id"`
+	RecipientID *string `json:"recipient_id"`
+	GroupID     *string `json:"group_id"`
+	Ciphertext  []byte  `json:"ciphertext"`
+	Nonce       []byte  `json:"nonce"`
+	CreatedAt   string  `json:"created_at"`
+	ExpiresAt   *string `json:"expires_at"`
+	ReadAt      *string `json:"read_at"`
 }
 
 type FileRow struct {
-	ID                string     `json:"id"`
-	UploaderID        string     `json:"uploader_id"`
-	EncryptedBlobPath string     `json:"encrypted_blob_path"`
-	EncryptedMetadata []byte     `json:"encrypted_metadata"`
-	SizeBytes         int64      `json:"size_bytes"`
-	CreatedAt         time.Time  `json:"created_at"`
-	ExpiresAt         *time.Time `json:"expires_at"`
-	TargetID          string     `json:"target_id"`
-	TargetType        string     `json:"target_type"`
-	OriginalName      string     `json:"original_name"`
-	MessageID         string     `json:"message_id"`
-}
-
-type RecoveryBackupRow struct {
-	RecoveryCodeHash    string
-	EncryptedPrivateKey []byte
-	Salt                []byte
-	AuthSalt            []byte
+	ID         string     `json:"id"`
+	UploaderID string     `json:"uploader_id"`
+	SizeBytes  int64      `json:"size_bytes"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  *time.Time `json:"expires_at"`
+	TargetID   string     `json:"target_id"`
+	TargetType string     `json:"target_type"`
+	MessageID  string     `json:"message_id"`
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1044,7 +1100,7 @@ func scanMessage(s interface {
 	Scan(dest ...interface{}) error
 }) (*MessageRow, error) {
 	m := &MessageRow{}
-	if err := s.Scan(&m.ID, &m.SenderID, &m.RecipientID, &m.GroupID, &m.Ciphertext, &m.EphemeralPubKey, &m.Nonce, &m.CreatedAt, &m.ExpiresAt, &m.ReadAt); err != nil {
+	if err := s.Scan(&m.ID, &m.SenderID, &m.RecipientID, &m.GroupID, &m.Ciphertext, &m.Nonce, &m.CreatedAt, &m.ExpiresAt, &m.ReadAt); err != nil {
 		return nil, err
 	}
 	normalizeTimestamp(&m.CreatedAt)

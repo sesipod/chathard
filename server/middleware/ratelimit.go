@@ -45,9 +45,9 @@ type rateEntry struct {
 
 // RateLimiter provides per-endpoint in-memory rate limiting.
 type RateLimiter struct {
-	mu     sync.Mutex
+	mu      sync.Mutex
 	entries map[string]*rateEntry
-	cfg    RateLimitConfig
+	cfg     RateLimitConfig
 }
 
 // NewRateLimiter creates a new RateLimiter with periodic stale entry cleanup.
