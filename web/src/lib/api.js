@@ -10,6 +10,8 @@
  *   const ws = api.connectWebSocket(token);
  */
 
+import { toB64 } from './crypto/bytes.js';
+
 // ── Helpers ──
 
 /** Read the current session token. */
@@ -27,39 +29,43 @@ function headers(authenticated = true) {
   return h;
 }
 
-/** Throw a structured error on non-OK responses. */
+/** Throw a readable error on non-OK responses (the server replies in plain text). */
 async function throwIfNotOk(res) {
   if (!res.ok) {
-    let msg;
+    let msg = '';
     try {
-      const body = await res.json();
-      msg = body.error || body.message || res.statusText;
+      msg = (await res.text()).trim();
+      if (msg.startsWith('{')) {
+        const body = JSON.parse(msg);
+        msg = body.error || body.message || msg;
+      }
     } catch {
-      msg = res.statusText || `HTTP ${res.status}`;
+      /* fall through */
     }
-    // Redirect to login on 401
     if (res.status === 401) {
       sessionStorage.removeItem('tailchat-token');
       sessionStorage.removeItem('tailchat-user-id');
     }
-    throw new Error(msg);
+    throw new Error(msg || res.statusText || `HTTP ${res.status}`);
   }
 }
+
+const b64 = (bytes) => toB64(bytes);
 
 // ── Public API ──
 
 const api = {
   // ── Registration ──
-  async register(handle, publicKeyEd25519, publicKeyX25519, derivedPublicKey, encryptedKeyBackups) {
+  // Only public keys are sent. The account key itself never leaves the browser.
+  async register(handle, edPub, xPub, authPub) {
     const res = await fetch('/api/register', {
       method: 'POST',
       headers: headers(false),
       body: JSON.stringify({
         handle,
-        public_key_ed25519: Array.from(publicKeyEd25519),
-        public_key_x25519: Array.from(publicKeyX25519),
-        derived_public_key_ed25519: Array.from(derivedPublicKey),
-        encrypted_key_backups: encryptedKeyBackups,
+        public_key_ed25519: b64(edPub),
+        public_key_x25519: b64(xPub),
+        derived_public_key_ed25519: b64(authPub),
       }),
     });
     await throwIfNotOk(res);
@@ -113,17 +119,14 @@ const api = {
     return data.messages ?? []; // server wraps in { messages: [...] }, may be null
   },
 
-  async sendMessage({ recipientId, groupId, ciphertext, ephemeralPub, nonce, expiresIn }) {
+  async sendMessage({ recipientId, groupId, ciphertext, nonce, expiresIn }) {
     const body = {
-      recipient_id: recipientId || null,
-      group_id: groupId || null,
-      ciphertext: Array.from(ciphertext),
-      ephemeral_public_key: Array.from(ephemeralPub),
-      nonce: Array.from(nonce),
+      recipient_id: recipientId || '',
+      group_id: groupId || '',
+      ciphertext: b64(ciphertext),
+      nonce: b64(nonce),
     };
-    if (expiresIn) {
-      body.expires_in = expiresIn;
-    }
+    if (expiresIn) body.expires_in = expiresIn;
     const res = await fetch('/api/messages', {
       method: 'POST',
       headers: headers(),
@@ -177,15 +180,10 @@ const api = {
     return res.json();
   },
 
-  // ── Recovery ──
-  async recover(userId, recoveryCodeHash) {
-    const res = await fetch('/api/recover', {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({ user_id: userId, recovery_code_hash: recoveryCodeHash }),
-    });
+  async lookupUsers(ids) {
+    const res = await fetch(`/api/users/lookup?ids=${ids.map(encodeURIComponent).join(',')}`, { headers: headers() });
     await throwIfNotOk(res);
-    return res.json();
+    return (await res.json()).users ?? [];
   },
 
   // ── Me ──
@@ -196,51 +194,64 @@ const api = {
   },
 
   // ── Groups ──
-  async createGroup(encryptedName, members) {
+  async createGroup({ id, encryptedName, members }) {
     const res = await fetch('/api/groups', {
       method: 'POST',
       headers: headers(),
       body: JSON.stringify({
-        encrypted_name: Array.from(encryptedName),
-        encrypted_symmetric_key: [],
-        members: members.map(id => ({
-          user_id: id,
-          encrypted_group_key: [],
-          encrypted_member_metadata: [],
-        })),
+        id,
+        encrypted_name: b64(encryptedName),
+        members: members.map((m) => ({ user_id: m.userId, envelope: b64(m.envelope) })),
       }),
     });
     await throwIfNotOk(res);
     return res.json();
   },
 
-  async addMember(groupId, userId, encryptedGroupKey) {
+  async fetchGroupKeys(groupId) {
+    const res = await fetch(`/api/groups/${groupId}/keys`, { headers: headers() });
+    await throwIfNotOk(res);
+    return res.json(); // { group, envelopes:[{epoch, signer_id, envelope}], members:[…] }
+  },
+
+  async addMember(groupId, userId, epoch, envelope) {
     const res = await fetch(`/api/groups/${groupId}/members`, {
       method: 'POST',
       headers: headers(),
+      body: JSON.stringify({ user_id: userId, epoch, envelope: b64(envelope) }),
+    });
+    await throwIfNotOk(res);
+  },
+
+  async leaveGroup(groupId, userId) {
+    const res = await fetch(`/api/groups/${groupId}/members/${userId}`, { method: 'DELETE', headers: headers() });
+    await throwIfNotOk(res);
+  },
+
+  /** Admin: remove `userId` (optional) and move the group to a new key epoch. */
+  async rotateGroup(groupId, { userId, epoch, encryptedName, members }) {
+    const res = await fetch(`/api/groups/${groupId}/${userId ? 'remove' : 'rotate'}`, {
+      method: 'POST',
+      headers: headers(),
       body: JSON.stringify({
-        user_id: userId,
-        encrypted_group_key: Array.from(encryptedGroupKey),
+        user_id: userId || '',
+        epoch,
+        encrypted_name: b64(encryptedName),
+        members: members.map((m) => ({ user_id: m.userId, envelope: b64(m.envelope) })),
       }),
     });
     await throwIfNotOk(res);
-    return res.json();
   },
 
-  async removeMember(groupId, userId) {
-    const res = await fetch(`/api/groups/${groupId}/members/${userId}`, {
-      method: 'DELETE',
-      headers: headers(),
-    });
-    await throwIfNotOk(res);
-    return res.json();
-  },
-
-  async fetchGroupMessages(groupId) {
-    const res = await fetch(`/api/groups/${groupId}/messages`, { headers: headers() });
+  async fetchGroupMessages(groupId, { before, limit } = {}) {
+    const params = new URLSearchParams();
+    if (before) params.set('before', before);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    const res = await fetch(`/api/groups/${groupId}/messages${qs ? `?${qs}` : ''}`, { headers: headers() });
     await throwIfNotOk(res);
     const data = await res.json();
-    return data.messages ?? []; // server wraps in { messages: [...] }, may be null
+    return data.messages ?? [];
   },
 
   async fetchMyGroups() {
@@ -269,20 +280,13 @@ const api = {
   },
 
   // ── Files ──
-  async uploadFile(file, expiresIn, targetId, targetType) {
+  /** Upload an already-encrypted blob. Names/types/keys are NOT sent. */
+  async uploadFile(blob, expiresIn, targetId, targetType) {
     const form = new FormData();
-    form.append('file', file);
-    form.append('encrypted_metadata', '');
-    if (expiresIn) {
-      form.append('expires_in', expiresIn);
-    }
-    if (targetId) {
-      form.append('target_id', targetId);
-    }
-    if (targetType) {
-      form.append('target_type', targetType);
-    }
-    form.append('original_name', file.name);
+    form.append('file', blob, 'blob');
+    form.append('target_id', targetId);
+    form.append('target_type', targetType);
+    if (expiresIn) form.append('expires_in', expiresIn);
     const res = await fetch('/api/files/upload', {
       method: 'POST',
       headers: { Authorization: `Bearer ${getToken()}` }, // no Content-Type — browser sets multipart
@@ -331,29 +335,49 @@ const api = {
 
   // ── WebSocket ──
   /**
-   * Open a WebSocket connection with automatic reconnect.
-   * @param {string} token  Session token for authentication.
-   * @param {object} [opts]
-   * @param {number} [opts.maxRetries=10]
-   * @param {number} [opts.baseDelay=1000]
-   * @returns {WebSocket}
+   * Open a WebSocket that reconnects with backoff and keeps its handlers across
+   * reconnects. `onOpen(isReconnect)` lets the caller resync anything missed.
+   * @returns {{send(obj): void, close(): void, readonly ready: boolean}}
    */
-  connectWebSocket(token, { maxRetries = 10, baseDelay = 1000 } = {}) {
+  connectWebSocket(token, { onMessage, onOpen, onClose } = {}, { maxRetries = 10, baseDelay = 1000 } = {}) {
     const wsPrefix = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${wsPrefix}://${location.host}/ws?token=${encodeURIComponent(token)}`;
-    let ws = new WebSocket(url);
+    let ws = null;
     let retries = 0;
+    let closed = false;
+    let everOpened = false;
 
-    ws.addEventListener('close', () => {
-      if (retries >= maxRetries) return;
-      const delay = Math.min(baseDelay * Math.pow(2, retries), 30000);
-      retries++;
-      setTimeout(() => {
-        ws = new WebSocket(url);
-      }, delay);
-    });
+    const open = () => {
+      ws = new WebSocket(url);
+      ws.addEventListener('open', () => {
+        const reconnect = everOpened;
+        everOpened = true;
+        retries = 0;
+        onOpen?.(reconnect);
+      });
+      ws.addEventListener('message', (ev) => onMessage?.(ev));
+      ws.addEventListener('close', () => {
+        onClose?.();
+        if (closed || retries >= maxRetries) return;
+        const delay = Math.min(baseDelay * Math.pow(2, retries), 30000);
+        retries++;
+        setTimeout(open, delay);
+      });
+    };
+    open();
 
-    return ws;
+    return {
+      send(obj) {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+      },
+      close() {
+        closed = true;
+        ws?.close();
+      },
+      get ready() {
+        return !!ws && ws.readyState === WebSocket.OPEN;
+      },
+    };
   },
 };
 

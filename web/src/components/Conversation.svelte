@@ -21,6 +21,9 @@
   import MessageBubble from './MessageBubble.svelte';
   import MessageInput from './MessageInput.svelte';
   import Avatar from './common/Avatar.svelte';
+  import SecurityModal from './SecurityModal.svelte';
+  import { getUsers } from '../lib/directory.js';
+  import { securityAlerts } from '../lib/stores/chats.js';
 
   export let conversation = {};
   export let messages = [];
@@ -31,6 +34,8 @@
   let messageListEl;
   let isScrolledUp = false;
   let showMenu = false;
+  let showSecurity = false;
+  let senderNames = {};
   let showRetentionPicker = false;
   let showRetentionConfirm = false;
   let pendingRetentionValue = '';
@@ -49,6 +54,21 @@
   $: retentionLabel = currentRetention && currentRetention !== 'Never'
     ? `Auto-delete: ${currentRetention}`
     : '';
+
+  // In groups, show who wrote each message (handles come from the verified key directory).
+  $: if (isGroup) resolveSenders(messages);
+  async function resolveSenders(msgs) {
+    const ids = [...new Set((msgs || []).map((m) => m.sender_id).filter((id) => id && id !== currentUserId && !senderNames[id]))];
+    if (!ids.length) return;
+    try {
+      const users = await getUsers(ids);
+      const next = { ...senderNames };
+      for (const [id, u] of users) next[id] = u.handle;
+      senderNames = next;
+    } catch {
+      /* names are cosmetic */
+    }
+  }
 
   /** Group messages by day and generate date separator data. */
   $: messageRows = buildMessageRows(messages);
@@ -145,6 +165,7 @@
   function handleMenuAction(action) {
     showMenu = false;
     if (action === 'files') dispatch('openFiles', conversation.id);
+    if (action === 'security') showSecurity = true;
     if (action === 'retention') showRetentionPicker = !showRetentionPicker;
     if (action === 'leave') dispatch('leaveGroup', conversation.id);
   }
@@ -251,6 +272,7 @@
 </script>
 
 <div class="conversation" on:keydown={handleKeydown}>
+  <SecurityModal show={showSecurity} userId={conversation.user_id || ""} on:close={() => (showSecurity = false)} />
   <!-- Header -->
   <header class="conv-header">
     <div class="header-left">
@@ -342,6 +364,12 @@
                 Leave group
               </button>
             {:else}
+              <button class="menu-item" role="menuitem" on:click={() => handleMenuAction('security')}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M8 1.5l5 2v4c0 3-2.2 5.2-5 6-2.8-.8-5-3-5-6v-4l5-2z" />
+                </svg>
+                Verify security
+              </button>
               <button class="menu-item" role="menuitem" on:click={() => handleMenuAction('retention')}>
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
                   <circle cx="8" cy="8" r="6" />
@@ -389,6 +417,12 @@
     </div>
   {/if}
 
+  {#if $securityAlerts[conversation.user_id || conversation.id]}
+    <div class="security-alert" role="alert">
+      ⚠️ {$securityAlerts[conversation.user_id || conversation.id]}
+    </div>
+  {/if}
+
   <!-- Message list -->
   <div
     class="message-list"
@@ -404,7 +438,7 @@
         <MessageBubble
           message={row.message}
           isOwn={row.message.is_own ?? (row.message.sender_id === currentUserId)}
-          senderHandle={row.message.is_own ? '' : (conversation.handle || '')}
+          senderHandle={row.message.is_own ? '' : (isGroup ? senderNames[row.message.sender_id] || '' : conversation.handle || '')}
           convId={conversation.user_id || conversation.id || ''}
           showDateSeparator={row.showDateSeparator}
           dateText={row.dateText}
@@ -522,4 +556,5 @@
   .batch-confirm-overlay { position:absolute; inset:0; z-index:30; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.5); padding:1rem; }
   .batch-confirm-dialog { max-width:360px; width:100%; padding:1.25rem; border-radius:12px; background:var(--color-bg-secondary); border:1px solid var(--color-border); box-shadow:0 8px 32px rgba(0,0,0,.4); }
   @media (max-width:767px) { .back-btn { display:flex; } .scroll-fab { bottom:72px; } }
+  .security-alert { padding: .6rem 1rem; background: #7f1d1d; color: #fee2e2; font-size: .8125rem; line-height: 1.4; }
 </style>

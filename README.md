@@ -7,10 +7,11 @@
 
 ## What is TailChat?
 
-TailChat is a **Signal-style encrypted messenger** that runs exclusively behind a self-hosted [WireGuard](https://www.wireguard.com) VPN managed with [wg-easy](https://github.com/wg-easy/wg-easy). New users get a QR code, scan it in the WireGuard app, and can then open the chat. Every byte stored on the server — messages, files, metadata, keys — is **client-side encrypted**. The server stores only opaque ciphertext blobs.
+TailChat is a **Signal-style encrypted messenger** that runs exclusively behind a self-hosted [WireGuard](https://www.wireguard.com) VPN managed with [wg-easy](https://github.com/wg-easy/wg-easy). New users get a QR code, scan it in the WireGuard app, and can then open the chat. Messages, files, file names and group names are **encrypted in your browser** before they are sent. The server stores only ciphertext and public keys, so someone with full access to the server cannot read what people said.
 
-- **No passwords** — authenticate with Ed25519 keypairs stored in your browser
-- **No phone numbers or usernames** — identity is keyfile-based (plaintext handles being removed)
+- **No passwords** — you sign in with a random 256-bit **account key** (text, QR or file) that never leaves your devices
+- **Any device** — enter your handle and account key on a new phone, tablet or laptop and your whole history decrypts there
+- **No phone numbers or email** — just a handle
 - **Group chat** — encrypted group conversations with per-member key distribution and rotation
 - **Real-time** — WebSocket push for instant message delivery and typing indicators
 - **No public internet** — the only open port is WireGuard (UDP 51820); the app is served at `https://chat.your-domain` only to VPN peers
@@ -21,113 +22,99 @@ TailChat is a **Signal-style encrypted messenger** that runs exclusively behind 
 
 ---
 
-## 🚧 Migration in Progress: Zero-Knowledge Identity
-
-The last plaintext column in the database — `handle` (username) — is being removed. See [`new-plan.md`](./new-plan.md) for the full plan.
-
-**What's changing:**
-- **Login**: Handle text input → keyfile upload (download a `.json` keyfile at registration)
-- **Add friends**: Handle search → one-time invite codes (8-char, 24h expiry, hashed on server)
-- **Display names**: Server-side handles → client-side encrypted custom names (AES-256-GCM, never seen by server)
-- **No handle column** in `users` table after migration
-
----
-
 ## Security Model
 
-### Zero-Knowledge Server
+**Goal:** someone with full access to the server (disk, database, backups, logs, even a live shell) cannot read anyone's messages, files, file names or group names.
+
+### What the server stores
+
+| Data | Stored as |
+|---|---|
+| Messages (1:1 and group) | AES-256-GCM ciphertext |
+| Files and images | AES-256-GCM ciphertext blobs; **name, type, size and key travel inside the encrypted message** |
+| Group names | AES-256-GCM ciphertext |
+| Group keys | sealed to each member's public key and signed by the group admin |
+| Accounts | handle (plaintext), three **public** keys |
+| Private keys / account keys | **never** — there is no table, field or log line that holds them |
+
+**What the server can still see (metadata):** handles, who talks to whom, which groups exist and who is in them, when messages are sent, and roughly how large they are.
+
+### Key hierarchy
 
 ```
-┌──────────────────────────────┐
-│       TailChat Server         │
-│                               │
-│  • handles (plain) ⚠️         │  ← Being removed — see migration below
-│  • UUIDs (plain)              │  ← Message routing
-│  • public_keys (plain)        │  ← Needed for encryption setup
-│  ────────────────────────    │
-│  • messages (ciphered)        │  ← AES-256-GCM, per-message keys
-│  • group names (ciphered)     │  ← Encrypted with group key
-│  • group metadata (ciphered)  │  ← Member names, encrypted per-member
-│  • files (ciphered)           │  ← Unique AES key per file
-│  • metadata (ciphered)        │  ← Filenames, MIME types encrypted
-└──────────────────────────────┘
-
-> ⚠️ **Migration in progress**: `handle` is the last plaintext column. After migration, the server stores no human-readable identifiers at all — only UUIDs and public keys.
+Account key (256 random bits) — shown once at sign-up; you keep it, the server never sees it
+├── Ed25519 identity key ─── signs every message and group-key envelope
+├── X25519 encryption key ── receives message keys and group keys (derived from the identity key)
+└── Ed25519 login key ────── HKDF-derived; proves who you are to the server (the identity key never does)
 ```
 
-### Key Hierarchy
+Because everything derives from the one account key, **any device that has it can decrypt all of your history**, including messages you sent yourself.
 
-```
-Master Ed25519 Keypair (IndexedDB only — never leaves your device)
-├── X25519 Keypair ──── Used for ECDH message encryption
-├── Auth Keypair ────── HKDF-derived, signs login challenges
-└── Recovery Codes ──── 10 one-time codes (PBKDF2-encrypted master key)
-```
+### Signing in (no passwords, nothing to guess)
 
-### Authentication
+1. The browser asks the server for a random challenge for your handle.
+2. It signs the challenge with the login key derived from your account key.
+3. The server verifies the signature and issues a session token (stored hashed).
 
-- **Dual-layer**: WireGuard peer IP (first gate, checked by the firewall, Caddy and the app) + Ed25519 challenge-response (second gate)
-- **Key blinding**: The master signing key never leaves your browser. An HKDF-derived auth keypair (info `"tailchat-auth"`) handles login challenges
-- **Session tokens**: SHA-256 hashed in the database — raw tokens are unrecoverable from a DB dump. Stored in `sessionStorage` (cleared on tab close)
-- **Recovery codes**: 10 one-time codes protected by PBKDF2 (100K SHA-256 iterations) → AES-256-GCM. Constant-time hash comparison on server
-- **No passwords**: Auth proves ownership of your keypair via cryptographic challenge
-- **Keyfile login (v2)**: Upload downloaded keyfile → server identifies by `user_id` → challenge-response → session token
+The server holds no password hash, vault or recovery blob, so there is nothing to brute-force. **If you lose your account key, nobody can recover your account or history — including the server admin.** Store it in a password manager or print the QR code.
+
+Optional *Remember this device* keeps the key in that browser's IndexedDB so you can tap "Continue" instead of re-entering it. Use it only on devices you own; *Settings → Forget* removes it.
 
 ### Encryption
 
-| Layer | Algorithm |
-|-------|-----------|
-| 1:1 Messages | X25519 ECDH → HKDF-SHA256 → AES-256-GCM (ephemeral keys per message) |
-| Group Messages | AES-256-GCM with per-member encrypted group key (key rotation on member changes) |
-| File Attachments | AES-256-GCM (unique key per file, 1MB chunked encryption) |
-| Recovery Codes | PBKDF2 (100K iterations, SHA-256) → AES-256-GCM |
-| Contact Names (v2) | HKDF-SHA256 → AES-256-GCM (derived from master key, stored client-side) |
+| Layer | Construction |
+|---|---|
+| 1:1 message | random per-message key → AES-256-GCM; that key is wrapped (X25519 ECDH → HKDF → AES-GCM) **for the recipient and again for the sender**, so you can re-read what you sent on any device |
+| Group message | AES-256-GCM under the group key for the current *epoch* |
+| Group key | one random key per epoch, sealed to each member and **signed by the admin**; a new epoch is issued whenever someone is removed or leaves, so ex-members cannot read new messages |
+| Group name | AES-256-GCM under the group key |
+| Files | per-file random key, 1 MiB AES-256-GCM frames with index + "last frame" authenticated (reorder/truncate/tamper is detected) |
+| Authenticity | every message is Ed25519-signed; ids are bound into the encryption so the server cannot move a ciphertext to another conversation or change its sender |
 
-### What an Attacker Sees (Database Dump)
+### What an attacker with server access sees
 
 ```sql
--- users table: handles (plain — ⚠️ being removed) & public keys (designed to be public)
-alice | \x8a3f... | \xb4e2... | \x9c1d...
-
--- messages table: all ciphertext
-\xf3a1b2c8d4... | \xe5f6... | \x12ab...
-
--- groups table: encrypted names + encrypted member metadata
-\x44dd88aa...
-
--- group_members table: per-member encrypted group keys
-\xaabb11...
-
--- files table: encrypted metadata + opaque blob paths
-\x9b2c3d... | \xab/shards/...
-
--- sessions table: hashed tokens (no raw tokens recoverable)
-a1b2c3d4e5f6...
-
--- encrypted_key_backups: PBKDF2-protected master keys
-\x7e8f...
+users:                 alice | <32-byte pubkey> | <32-byte pubkey> | <32-byte pubkey>
+messages:              <sender uuid> | <recipient/group uuid> | 02a931a7da0c… (381 random-looking bytes)
+groups:                000000000e107c… (encrypted name) | admin uuid | epoch 1
+group_key_envelopes:   per member, 144 bytes sealed to that member's key
+files:                 uuid | size | <conversation uuid>        (blob on disk is ciphertext; no name)
 ```
 
-> **No message content, no group names, no filenames, no private keys, no raw session tokens — ever.**
-> The only human-readable text is the `handle` column, which is actively being migrated out.
+The automated browser test searches the whole database, write-ahead log, blob directory and server log for every message, file content, file name, group name and account key used in the test: **none appears**.
+
+### What the server (or an attacker controlling it) can still try, and how it is handled
+
+| Attack | Defence |
+|---|---|
+| Read stored data | Everything sensitive is ciphertext; see above |
+| Forge a message "from" someone | Messages are Ed25519-signed; the signature is verified against the sender's pinned key |
+| Move/relabel/replay a ciphertext | Sender, recipient/group, and epoch are authenticated data; duplicate message ids are dropped |
+| Hand a user a fake group key | Group keys must be signed by the group's admin; others are ignored |
+| Swap a contact's public key | First-seen keys are **pinned**; a later change blocks messaging with a red warning. To rule out a swap at *first contact*, compare the **safety number** (chat menu → *Verify security*) in person or on a call |
+| Read a removed member's future messages | Admin's browser issues a new group key (new epoch) for the remaining members |
+
+### Known limits (read these)
+
+- **The server serves the app's JavaScript.** A malicious server operator could ship a modified web app that leaks keys to them. End-to-end encryption in a web app can never fully remove this; it protects against stolen data, database access, backups and passive snooping, but not against an operator who actively replaces the code. Mitigations: keep the server patched, restrict who has admin access, and consider shipping the app as a separately signed package later.
+- **No forward secrecy.** A stolen account key decrypts that person's past and future messages. Rotating per-message ratchets (Signal's double ratchet) is not implemented.
+- **Metadata is visible** (see above).
+- **Anyone who gets your account key *is* you.**
+- Handles are plaintext and searchable by anyone on the VPN.
 
 ### Rate Limiting
 
-| Endpoint | Limit | Lockout |
-|----------|-------|---------|
-| Registration | 3 per hour | — |
-| Messages | 60 per minute | — |
-| User Search | 30 per minute | — |
-| Recovery | 3 per hour | 1-hour lock after 3 failures |
+| Endpoint | Limit |
+|----------|-------|
+| Registration | 3 per hour per IP |
+| Messages / sign-in | 60 per minute per IP |
+| User search | 30 per minute per IP |
 
 ---
 
-## Current Version
+## Status
 
-**v1.1.0** (Iteration 14)
-- All core features complete: registration, login, 1:1 messaging, group chat, file uploads, WebSocket real-time delivery
-- Security hardening: constant-time comparison, rate limiting, session token hashing
-- Upcoming v2: zero-knowledge identity migration (see [`new-plan.md`](./new-plan.md))
+**v2.0 — end-to-end encryption.** The earlier code had the crypto helpers but never called them (messages and files went to the server in plain text). This version wires real encryption through every path and tests it, including in a real browser (see *Testing*).
 
 ---
 
@@ -246,7 +233,7 @@ cd ../web && npm run dev
 │   │   ├── schema.sql    # Full schema reference
 │   │   ├── queries.go    # All prepared SQL statements
 │   │   └── migrations/   # 001_init, 002_user_retention
-│   ├── handlers/         # auth, register, recover, messages, files, groups, ws, invites (v2)
+│   ├── handlers/         # auth, register, messages, files, groups, ws
 │   ├── middleware/        # VPN gate (peer IP check), rate limiting
 │   └── storage/          # Encrypted blob storage with hex-sharding
 └── web/
@@ -265,7 +252,6 @@ cd ../web && npm run dev
                 ├── keygen.js       # Ed25519 → X25519 + HKDF auth derivation
                 ├── encrypt.js      # X25519 ECDH → AES-256-GCM messaging
                 ├── file-encrypt.js # Chunked AES-256-GCM file encryption
-                ├── recover.js      # PBKDF2 recovery code encrypt/decrypt
                 └── contact-encrypt.js # (v2) AES-256-GCM contact name encryption
 ```
     ├── src/
@@ -285,8 +271,9 @@ cd ../web && npm run dev
 - [x] **Client-side E2E encryption** — messages, files, group names, filenames, MIME types
 - [x] **Key blinding** — master Ed25519 key never leaves IndexedDB; derived key handles auth
 - [x] **SHA-256 session hashes** — raw tokens unrecoverable from DB dumps
-- [x] **Constant-time comparison** — timing-attack-resistant recovery code verification
-- [x] **Rate limiting** — register 3/hr, messages 60/min, search 30/min, recovery lockout
+- [x] **Signed messages & group keys** — forgery by the server or a peer is detected
+- [x] **Authorization on every route** — group data, files and hide/retention require membership; covered by Go tests
+- [x] **Rate limiting** — register 3/hr, messages 60/min, search 30/min (per real client IP)
 - [x] **WireGuard-only access** — app only answers clients in the VPN subnet; CORS and WebSocket Origin restricted to the app's own domain
 - [x] **Container hardening** — distroless non-root app image, read-only root FS, all capabilities dropped, `no-new-privileges`
 - [x] **Body size limits** — 10MB max request body
@@ -308,16 +295,31 @@ cd ../web && npm run dev
 A: The app is never on the public internet. Only people you hand a WireGuard QR code to can even load the page, and you can cut anyone off by disabling their client in wg-easy. It's the same idea as the old Tailscale setup, but fully self-hosted with no third-party coordination server or accounts.
 
 **Q: Can the server admin read messages?**  
-A: No. Messages are encrypted with AES-256-GCM client-side before transmission. The server stores only ciphertext. Even with full database and filesystem access, message content is unrecoverable without the recipient's private key.
+A: No. Messages are encrypted with AES-256-GCM client-side before transmission. The server stores only ciphertext. Even with full database and filesystem access, message content is unrecoverable without an account key, which the server never has. See *Known limits* for the one thing a hostile server operator could still attempt (serving modified app code).
 
 **Q: What happens if I lose my device?**  
-A: Use one of your 10 recovery codes with your handle to restore your keypair and all message history on a new device.
+A: Nothing is lost as long as you still have your **account key**: enter it with your handle on any new device and your full history appears. If you lose both the device and the key, the account cannot be recovered by anyone.
 
 **Q: Can I self-host this?**  
 A: Yes — that's the only deployment model. See **Deploy** above.
 
 **Q: Does this work on mobile?**  
 A: Yes, it's a PWA. With the WireGuard tunnel on, open the URL on your phone, tap "Add to Home Screen", and it installs as a standalone app with notifications.
+
+## Testing
+
+```bash
+# Go: authorization rules (who may read/send/add/remove/download what)
+cd server && go test ./...
+
+# JavaScript: the real crypto — round trips, multi-device, forgery, tampering, truncation
+cd web && npm install && node --test test/crypto.test.mjs
+
+# Browser end-to-end (real server, real built app, headless Chromium, 3 users):
+#   register, 1:1 chat, image + file, logout/login, brand-new device, groups,
+#   key rotation on leave, simulated server key-swap, and a search of all server
+#   storage for plaintext.  See e2e/README.md
+```
 
 ## License
 

@@ -24,7 +24,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const version = "1.0.0"
+const version = "2.0.0"
 
 var startTime = time.Now()
 
@@ -75,6 +75,9 @@ func main() {
 	// Only the app's own HTTPS origin (plus local Vite dev) may make
 	// cross-origin requests or open WebSockets.
 	allowedOrigins := map[string]bool{"https://" + cfg.Server.Domain: true}
+	for _, o := range cfg.Server.ExtraOrigins {
+		allowedOrigins[strings.TrimSpace(o)] = true
+	}
 	if *dev {
 		allowedOrigins["http://localhost:5173"] = true
 		allowedOrigins["http://localhost:3000"] = true

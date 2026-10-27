@@ -4,6 +4,10 @@
   import { auth } from '../lib/stores/auth.js';
   import { settings, theme, defaultRetention } from '../lib/stores/settings.js';
   import api from '../lib/api.js';
+  import qrcode from 'qrcode-generator';
+  import { formatAccountKey } from '../lib/crypto/identity.js';
+  import { forgetDevice, getIdentity, hasRememberedKey } from '../lib/keyring.js';
+  import { push } from 'svelte-spa-router';
 
   export let show = false;
   export let conversations = [];
@@ -11,9 +15,11 @@
   const dispatch = createEventDispatcher();
 
   let userProfile = null;
-  let recoveryRemaining = 0;
+  let rememberedHere = false;
+  let keyText = '';
+  let keyQr = '';
+  let confirmForget = false;
   let serverInfo = null;
-  let showRecoveryView = false;
   let confirmLogout = false;
   let confirmExportKey = false;
   let editingRetentionConv = null;
@@ -26,7 +32,7 @@
 
   onMount(async () => {
     const unsub = auth.subscribe(($a) => { userProfile = $a.user; });
-    try { const me = await api.getMe(); recoveryRemaining = me.recovery_codes_remaining || 0; } catch {}
+    rememberedHere = await hasRememberedKey();
     try { serverInfo = await api.health(); } catch {}
     return unsub;
   });
@@ -77,7 +83,25 @@
   }
   function cancelRet() { editingRetentionConv = null; editingRetentionConv = editingRetentionConv; }
   async function doLogout() { await auth.logout(); }
-  function doExport() { confirmExportKey = false; }
+  async function showKey() {
+    const id = await getIdentity();
+    if (!id) return;
+    keyText = formatAccountKey(id.seed);
+    const qr = qrcode(0, 'M');
+    qr.addData(keyText);
+    qr.make();
+    keyQr = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+    confirmExportKey = true;
+  }
+  function closeKey() { confirmExportKey = false; keyText = ''; keyQr = ''; }
+  async function doForget() {
+    confirmForget = false;
+    try { await api.logout(); } catch {}
+    await forgetDevice();
+    sessionStorage.clear();
+    push('/login');
+    location.reload();
+  }
   function convName(c) { return c.handle || c.name || 'Unknown'; }
   function convKey(c) { return c.user_id || c.id; }
 
@@ -100,25 +124,17 @@
 <div class="overlay"><div class="page">
 <header class="hdr"><button class="back" on:click={back}><svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="12,4 6,10 12,16"/></svg> Settings</button></header>
 <div class="scroll">
-{#if showRecoveryView}
-<section class="sec">
-  <div class="sec-hdr"><button class="back" on:click={() => { showRecoveryView = false; }}><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="12,4 6,10 12,16"/></svg> Back</button><h3 class="st">Recovery Codes</h3></div>
-  <div class="card">
-    <p class="p-3">You have <strong>{recoveryRemaining}</strong> of 10 recovery codes remaining.</p>
-    <div class="warn"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><line x1="8" y1="5" x2="8" y2="9"/><line x1="8" y1="11" x2="8" y2="11"/></svg><span>Generating a new set invalidates all existing codes.</span></div>
-    <button class="btn btn-danger-outline w-full m-3" disabled>Generate New Codes</button>
-  </div>
-</section>
-{:else}
 <section class="sec"><h3 class="st">Account</h3><div class="card">
   <div class="row"><span>Your handle</span><span class="mono">@{userProfile?.handle || '…'}</span></div>
   <div class="row"><span>Your UUID</span><button class="cpy" on:click={() => copy(userProfile?.uuid || '')}><span class="mono">{trunc(userProfile?.uuid, 8)}</span>📋</button></div>
-  <div class="row"><span>Public key fingerprint</span><button class="cpy" on:click={() => copy(userProfile?.key_fingerprint || '')}><span class="mono">{trunc(userProfile?.key_fingerprint, 16)}</span>📋</button></div>
+  <div class="row"><span>Your key fingerprint</span><button class="cpy" on:click={() => copy(userProfile?.key_fingerprint || '')}><span class="mono">{userProfile?.key_fingerprint || '…'}</span>📋</button></div>
 </div></section>
 
 <section class="sec"><h3 class="st">Security</h3><div class="card">
-  <button class="row clickable" on:click={() => { showRecoveryView = true; }}><span>Recovery codes</span><span class="flex-row"><span class="badge">{recoveryRemaining} of 10 remaining</span>▶</span></button>
-  <div class="row"><span>Export private key</span><button class="btn btn-sm" on:click={() => { confirmExportKey = true; }}>Export</button></div>
+  <div class="row"><span>Account key<br /><small class="muted">Use it to sign in on another device</small></span><button class="btn btn-sm" on:click={showKey}>Show</button></div>
+  {#if rememberedHere}
+  <div class="row"><span>This device<br /><small class="muted">Signed in without the key</small></span><button class="btn btn-sm btn-danger" on:click={() => { confirmForget = true; }}>Forget</button></div>
+  {/if}
   <div class="row"><span>Session</span><button class="btn btn-sm btn-danger" on:click={() => { confirmLogout = true; }}>Log out</button></div>
 </div></section>
 
@@ -161,7 +177,6 @@
   <div class="row"><span>Network</span><span class="mono">{serverInfo ? `${serverInfo.network} · ${serverInfo.domain}` : '…'}</span></div>
   <div class="row"><span>Server</span><span class="mono">{serverInfo ? `${serverInfo.status} · ${serverInfo.uptime}` : '…'}</span></div>
 </div></section>
-{/if}
 </div></div></div>
 {/if}
 
@@ -176,13 +191,21 @@
 {/if}
 
 {#if confirmLogout}<div class="dlg-bg" on:click={() => { confirmLogout = false; }}><div class="dlg" on:click|stopPropagation>
-  <h3>Log out?</h3><p>You will need to be connected to the WireGuard VPN and prove ownership of your keypair to log back in.</p>
+  <h3>Log out?</h3><p>Your messages stay safe on the server, encrypted. To read them again, connect to the VPN and sign in with your account key{rememberedHere ? ' (or tap Continue on this device)' : ''}.</p>
   <div class="dlg-actions"><button class="btn" on:click={() => { confirmLogout = false; }}>Cancel</button><button class="btn btn-danger" on:click={doLogout}>Log out</button></div>
 </div></div>{/if}
 
-{#if confirmExportKey}<div class="dlg-bg" on:click={() => { confirmExportKey = false; }}><div class="dlg" on:click|stopPropagation>
-  <h3>Export private key?</h3><p>Your private key will be saved as an encrypted file. Keep it safe.</p>
-  <div class="dlg-actions"><button class="btn" on:click={() => { confirmExportKey = false; }}>Cancel</button><button class="btn btn-primary" on:click={doExport}>Export</button></div>
+{#if confirmForget}<div class="dlg-bg" on:click={() => { confirmForget = false; }}><div class="dlg" on:click|stopPropagation>
+  <h3>Forget this device?</h3><p>The account key will be erased from this browser. You will need to enter it again to sign in here. Make sure you have it saved.</p>
+  <div class="dlg-actions"><button class="btn" on:click={() => { confirmForget = false; }}>Cancel</button><button class="btn btn-danger" on:click={doForget}>Forget</button></div>
+</div></div>{/if}
+
+{#if confirmExportKey}<div class="dlg-bg" on:click={closeKey}><div class="dlg" on:click|stopPropagation>
+  <h3>Your account key</h3>
+  <p>Anyone with this key can read your messages. Enter it (or scan the QR) on a new device to sign in there.</p>
+  <div class="keybox mono">{keyText}</div>
+  <div class="qrbox">{@html keyQr}</div>
+  <div class="dlg-actions"><button class="btn" on:click={() => copy(keyText)}>Copy</button><button class="btn btn-primary" on:click={closeKey}>Done</button></div>
 </div></div>{/if}
 
 <style>
@@ -241,4 +264,7 @@
 .toggle-slider:before{content:'';position:absolute;height:18px;width:18px;left:2px;bottom:2px;background:var(--color-text-muted);border-radius:50%;transition:.2s}
 .toggle input:checked+.toggle-slider{background:var(--color-accent);border-color:var(--color-accent)}
 .toggle input:checked+.toggle-slider:before{transform:translateX(20px);background:#fff}
+.keybox{padding:.6rem;border:1px dashed var(--color-accent);border-radius:8px;word-break:break-all;line-height:1.7;margin:.5rem 0;user-select:all}
+.qrbox{display:flex;justify-content:center;margin:.5rem 0}
+.qrbox :global(svg){width:170px;height:170px;background:#fff;padding:6px;border-radius:8px}
 </style>

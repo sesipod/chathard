@@ -159,6 +159,33 @@ func (h *GroupsHandler) createGroup(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"group_id": req.ID})
 }
 
+// notifyGroup pings the current members (and any extra users, e.g. someone just
+// removed) so their clients refresh. Ids only; nothing secret.
+func (h *GroupsHandler) notifyGroup(groupID string, except string, extra ...string) {
+	hub := GetHub()
+	if hub == nil {
+		return
+	}
+	ids, _ := h.queries.GetGroupMemberIDs(groupID)
+	if g, err := h.queries.GetGroup(groupID); err == nil {
+		ids = append(ids, g.CreatedBy)
+	}
+	for _, e := range extra {
+		if e != "" {
+			ids = append(ids, e)
+		}
+	}
+	seen := map[string]bool{except: true}
+	var targets []string
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			targets = append(targets, id)
+		}
+	}
+	hub.NotifyGroupChanged(groupID, targets...)
+}
+
 // requireMember loads the group and checks membership; writes the error itself.
 func (h *GroupsHandler) requireMember(w http.ResponseWriter, userID, groupID string) (*db.GroupInfo, bool) {
 	g, err := h.queries.GetGroup(groupID)
@@ -257,6 +284,7 @@ func (h *GroupsHandler) addMember(w http.ResponseWriter, r *http.Request, groupI
 		http.Error(w, "Failed to add member", http.StatusInternalServerError)
 		return
 	}
+	h.notifyGroup(groupID, userID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -278,6 +306,7 @@ func (h *GroupsHandler) leave(w http.ResponseWriter, r *http.Request, groupID, m
 		http.Error(w, "Failed to leave group", http.StatusInternalServerError)
 		return
 	}
+	h.notifyGroup(groupID, userID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -362,6 +391,7 @@ func (h *GroupsHandler) doRotate(w http.ResponseWriter, r *http.Request, groupID
 		http.Error(w, "Failed to rotate group key", http.StatusInternalServerError)
 		return
 	}
+	h.notifyGroup(groupID, userID, remove)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -25,7 +25,8 @@
   export let selectMode = false;
   export let selected = false;
 
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onDestroy } from 'svelte';
+  import { fetchFile, isInlineImage, safeFileName } from '../lib/chat.js';
   import { getAutoShowImages, imageSettingsVersion } from '../lib/stores/settings.js';
 
   const dispatch = createEventDispatcher();
@@ -58,27 +59,17 @@
     return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
 
-  /** Get display content from a message, decoding base64 ciphertext if possible. */
+  /** Text shown for the message. Decryption already happened in lib/chat.js. */
   function getContent(msg) {
-    if (msg.content) return msg.content;
-    if (!msg.ciphertext) return '';
-    try {
-      const bytes = typeof msg.ciphertext === 'string'
-        ? Uint8Array.from(atob(msg.ciphertext), c => c.charCodeAt(0))
-        : new Uint8Array(msg.ciphertext);
-      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    } catch {
-      return '🔒 Encrypted';
-    }
+    return msg.content || '';
   }
 
-  /** Detect file reference: 📎 filename (file_id) */
-  $: fileMatch = content.match(/^📎\s*(.+?)\s*\(([a-f0-9]{32})\)$/);
-  $: isFile = !!fileMatch;
-  $: fileName = fileMatch ? fileMatch[1] : '';
-  $: fileId = fileMatch ? fileMatch[2] : '';
+  // File messages carry {id, key, name, mime, size} inside the encrypted payload.
+  $: file = message.file || null;
+  $: isFile = !!file;
+  $: fileName = file ? safeFileName(file.name) : '';
   $: displayContent = isFile ? `📎 ${fileName}` : content;
-  $: isImage = fileMatch && /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(fileName);
+  $: isImage = isInlineImage(file);
   // Use comma operator so store subscription forces re-evaluation on toggle
   $: showImages = ($imageSettingsVersion, getAutoShowImages(convId || 'default'));
   $: shouldAutoLoad = isImage && showImages;
@@ -87,14 +78,13 @@
   let imageUrl = '';
   let lightbox = false;
 
-  // Load image blob when auto-show is enabled
-  $: if (shouldAutoLoad && fileId && !imageLoaded && !imageError) {
+  // Fetch + decrypt the image locally when auto-show is enabled
+  $: if (shouldAutoLoad && file && !imageLoaded && !imageError) {
     imageLoaded = true;
-    loadImage(fileId);
+    loadImage(file);
   }
 
-  // Clean up image when auto-show is toggled off — resets local state so the
-  // template falls through to the download button, and re-loads when toggled on.
+  // Clean up image when auto-show is toggled off
   $: if (!showImages && imageUrl) {
     URL.revokeObjectURL(imageUrl);
     imageUrl = '';
@@ -102,25 +92,25 @@
     imageError = false;
   }
 
-  async function loadImage(id) {
+  onDestroy(() => {
+    if (imageUrl) URL.revokeObjectURL(imageUrl);
+  });
+
+  async function loadImage(f) {
     try {
-      const { default: api } = await import('../lib/api.js');
-      const blob = await api.downloadFile(id);
-      imageUrl = URL.createObjectURL(blob);
+      imageUrl = URL.createObjectURL(await fetchFile(f));
     } catch {
       imageError = true;
     }
   }
 
   async function downloadFile() {
-    if (!fileId) return;
+    if (!file) return;
     try {
-      const { default: api } = await import('../lib/api.js');
-      const blob = await api.downloadFile(fileId);
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(await fetchFile(file));
       const a = document.createElement('a');
       a.href = url;
-      a.download = fileName || 'download';
+      a.download = fileName;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -172,7 +162,7 @@
         {#if !isOwn && senderHandle}
           <div class="sender-handle">{senderHandle}</div>
         {/if}
-        <div class="bubble-content">
+        <div class="bubble-content" class:locked={message.locked}>
           {#if isFile}
             {#if imageUrl}
               <img class="inline-image" src={imageUrl} alt={fileName} on:click={() => { lightbox = true; }} on:error={() => { imageError = true; imageUrl = ''; }} />
@@ -301,4 +291,5 @@
   .bubble.received .bubble-time { color:var(--color-text-muted); }
   .status-icon { display:inline-flex; align-items:center; line-height:1; flex-shrink:0; }
   .bubble.sent .status-icon { color:rgba(255,255,255,.75); }
+  .bubble-content.locked { font-style: italic; opacity: 0.7; }
 </style>

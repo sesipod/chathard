@@ -25,6 +25,9 @@ type ServerConfig struct {
 	// TrustedProxies are the direct peers (the reverse proxy) whose
 	// X-Forwarded-For header is believed.
 	TrustedProxies []string `yaml:"trusted_proxies"`
+	// ExtraOrigins are additional browser Origins allowed for CORS/WebSocket.
+	// Leave empty in production; useful only for local testing over http.
+	ExtraOrigins []string `yaml:"extra_origins"`
 }
 
 type StorageConfig struct {
@@ -99,6 +102,7 @@ func LoadConfig(path string) (Config, error) {
 	envStr("CHAT_DOMAIN", &cfg.Server.Domain)
 	envList("VPN_CIDRS", &cfg.Server.VPNCIDRs)
 	envList("TRUSTED_PROXIES", &cfg.Server.TrustedProxies)
+	envList("EXTRA_ORIGINS", &cfg.Server.ExtraOrigins)
 	envStr("DB_PATH", &cfg.Storage.DBPath)
 	envStr("BLOB_DIR", &cfg.Storage.BlobDir)
 	return cfg, nil

@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte';
   import api from '../lib/api.js';
+  import { fetchFile, isInlineImage, openMessages, safeFileName } from '../lib/chat.js';
 
   export let show = false;
   export let convId = '';
@@ -18,18 +19,31 @@
     loadFiles();
   }
 
+  // File names, types and keys live inside the encrypted messages, so we page
+  // through the conversation and decrypt it here to list its files.
   async function loadFiles() {
     loading = true;
     error = '';
     try {
-      const data = await api.fetchConversationFiles(convId, isGroup);
-      files = data.files || [];
-      // Preload image previews for files that look like images
-      for (const file of files) {
-        if (isImageFile(file.original_name || file.id)) {
-          loadPreview(file.id);
+      const conv = isGroup ? { type: 'group', id: convId } : { type: 'direct', id: convId, user_id: convId };
+      const found = [];
+      let before;
+      for (let page = 0; page < 20; page++) {
+        const rows = isGroup
+          ? await api.fetchGroupMessages(convId, { before, limit: 200 })
+          : await api.fetchMessages({ withUserId: convId, before, limit: 200 });
+        if (!rows.length) break;
+        for (const m of await openMessages(rows, conv)) {
+          if (m.file) found.push({
+            id: m.file.id, key: m.file.key, mime: m.file.mime, original_name: m.file.name,
+            size_bytes: m.file.size, created_at: m.created_at, message_id: m.id, _file: m.file,
+          });
         }
+        if (rows.length < 200) break;
+        before = rows.map((r) => r.created_at).sort()[0];
       }
+      files = found.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+      for (const f of files) if (isImageFile(f)) loadPreview(f);
     } catch (e) {
       error = e.message || 'Failed to load files';
       files = [];
@@ -38,17 +52,15 @@
     }
   }
 
-  function isImageFile(name) {
-    return /\.(png|jpg|jpeg|gif|webp|svg|bmp|avif)$/i.test(name);
+  function isImageFile(f) {
+    return isInlineImage(f._file);
   }
 
-  async function loadPreview(fileId) {
+  async function loadPreview(f) {
     try {
-      const blob = await api.downloadFile(fileId);
-      const url = URL.createObjectURL(blob);
-      imageUrls = { ...imageUrls, [fileId]: url };
+      imageUrls = { ...imageUrls, [f.id]: URL.createObjectURL(await fetchFile(f._file)) };
     } catch {
-      failedImages.add(fileId);
+      failedImages.add(f.id);
     }
   }
 
@@ -80,21 +92,19 @@
   }
 
   function displayName(file) {
-    return file.original_name || (file.id ? file.id.slice(0, 12) + '…' : 'Unknown file');
+    return safeFileName(file.original_name);
   }
 
   function canPreview(file) {
-    const name = file.original_name || '';
-    return isImageFile(name) && !failedImages.has(file.id) && imageUrls[file.id];
+    return isImageFile(file) && !failedImages.has(file.id) && imageUrls[file.id];
   }
 
   async function handleDownload(file) {
     try {
-      const blob = await api.downloadFile(file.id);
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(await fetchFile(file._file));
       const a = document.createElement('a');
       a.href = url;
-      a.download = file.original_name || (file.id + '.enc');
+      a.download = safeFileName(file.original_name);
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -131,7 +141,7 @@
             <div class="file-row" class:clickable={!!file.message_id} on:click={() => file.message_id && jumpToMessage(file)}>
               {#if canPreview(file)}
                 <img class="file-thumb" src={imageUrls[file.id]} alt={displayName(file)} />
-              {:else if isImageFile(file.original_name || '')}
+              {:else if isImageFile(file)}
                 <div class="file-icon file-icon-img">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                     <rect x="3" y="3" width="18" height="18" rx="2"/>

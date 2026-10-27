@@ -15,6 +15,7 @@
  */
 import { writable, derived } from 'svelte/store';
 import api from '../api.js';
+import { groupDisplayName, openMessages } from '../chat.js';
 
 // ── Stores ──
 
@@ -23,6 +24,9 @@ export const conversations = writable([]);
 
 /** Id of the currently active/focused conversation. */
 export const activeConversationId = writable('');
+
+/** Security warnings keyed by conversation id, e.g. a contact's key changed. */
+export const securityAlerts = writable({});
 
 /** Messages keyed by conversation id: { [convId]: msg[] }. */
 export const messages = writable({});
@@ -33,10 +37,18 @@ export const messages = writable({});
 async function loadConversations() {
   try {
     const list = await api.fetchConversations();
+    // Group names are encrypted; decrypt them here (needs the group key).
+    await Promise.all(
+      list.map(async (c) => {
+        if (c.type === 'group') c.name = await groupDisplayName(c);
+      }),
+    );
     // Deduplicate: if server list includes a user we already have as synthetic,
     // merge their data (server version wins for last_message_at, unread_count)
     conversations.update((existing) => {
-      const merged = [...list];
+      // The server has no previews (it only holds ciphertext), so keep the ones decrypted here.
+      const previews = new Map(existing.map((c) => [c.user_id || c.id, c.last_message_preview]));
+      const merged = list.map((c) => ({ ...c, last_message_preview: previews.get(c.user_id || c.id) }));
       for (const existingConv of existing) {
         const key = existingConv.user_id || existingConv.id;
         const synKey = existingConv.id && existingConv.id.startsWith('_syn_') ? existingConv.user_id : null;
@@ -71,15 +83,29 @@ async function loadMessagesWithType(convId, isGroup) {
   if (!convId) return;
   let msgs;
   try {
-    if (isGroup) {
-      msgs = await api.fetchGroupMessages(convId);
-    } else {
-      msgs = await api.fetchMessages({ withUserId: convId });
-    }
+    const rows = isGroup ? await api.fetchGroupMessages(convId) : await api.fetchMessages({ withUserId: convId });
+    // Everything below happens in this browser: the server only had ciphertext.
+    msgs = await openMessages(rows, isGroup ? { type: 'group', id: convId } : { type: 'direct', id: convId, user_id: convId });
     msgs.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
     messages.update((m) => ({ ...m, [convId]: msgs }));
+    const last = msgs[msgs.length - 1];
+    if (last) {
+      conversations.update((list) =>
+        list.map((c) =>
+          (c.user_id || c.id) === convId ? { ...c, last_message_preview: last.locked ? '🔒' : last.content } : c,
+        ),
+      );
+    }
+    securityAlerts.update((a) => {
+      if (!(convId in a)) return a;
+      const { [convId]: _gone, ...rest } = a;
+      return rest;
+    });
   } catch (err) {
     console.error('Failed to load messages:', err);
+    if (err.name === 'KeyChangedError') {
+      securityAlerts.update((a) => ({ ...a, [convId]: err.message }));
+    }
   }
 }
 
@@ -97,9 +123,7 @@ function addMessage(conversationId, msg) {
     if (idx !== -1) {
       const conv = list.splice(idx, 1)[0];
       conv.last_message_at = msg.created_at || new Date().toISOString();
-      conv.last_message_preview = msg.ciphertext
-        ? 'Encrypted message'
-        : (msg.content || '');
+      conv.last_message_preview = msg.content || '';
       list.unshift(conv);
     }
     return list;
@@ -158,6 +182,7 @@ export const activeConversation = derived(
 );
 
 export const chatStore = {
+  securityAlerts,
   conversations,
   activeConversationId,
   messages,

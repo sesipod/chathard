@@ -21,6 +21,7 @@ const (
 	WSTypeNewMessage  = "new_message"
 	WSTypeTyping      = "typing"
 	WSTypeReadReceipt = "read_receipt"
+	WSTypeGroupChange = "group_changed"
 )
 
 // WSPayload is a generic WebSocket message.
@@ -162,6 +163,14 @@ func (h *Hub) NotifyReadReceipt(fromUserID, conversationWith, groupID, upToMsgID
 		payload.ConversationID = groupID
 		payload.GroupID = groupID
 		h.sendToGroup(groupID, fromUserID, payload)
+	}
+}
+
+// NotifyGroupChanged tells the given users that a group's roster or key changed
+// so their clients refresh it (and the admin's client rotates the key).
+func (h *Hub) NotifyGroupChanged(groupID string, userIDs ...string) {
+	for _, id := range userIDs {
+		h.sendToUser(id, WSPayload{Type: WSTypeGroupChange, GroupID: groupID, ConversationID: groupID})
 	}
 }
 

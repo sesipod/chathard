@@ -1,39 +1,44 @@
 <script>
-  import { push } from 'svelte-spa-router';
-  import {
-    generateKeyPair,
-    deriveKeys,
-    generateRecoveryCodes,
-    formatRecoveryCode,
-  } from '../lib/crypto/keygen.js';
-  import { encryptMasterKeyWithCode } from '../lib/crypto/recover.js';
-  import { storeKeyPair, loadKeyPair } from '../lib/db.js';
+  import { onMount } from 'svelte';
   import api from '../lib/api.js';
+  import { auth } from '../lib/stores/auth.js';
+  import { deriveIdentity, formatAccountKey, newAccountKey, parseAccountKey } from '../lib/crypto/identity.js';
+  import { getIdentity, hasRememberedKey } from '../lib/keyring.js';
+  import qrcode from 'qrcode-generator';
 
-  /** @type {'register'|'login'|'recover'} */
+  /** @type {'login'|'register'} */
   let mode = 'login';
 
-  // ── Shared state ──
-  let handle = '';
+  let handle = localStorage.getItem('tailchat-last-handle') || '';
   let error = '';
   let loading = false;
 
   // ── Register state ──
-  let handleAvailable = null; // null = unchecked, true/false
+  let handleAvailable = null;
   let checkingHandle = false;
-  let recoveryCodesShown = false;
-  let recoveryCodes = [];
+  let handleDebounce;
+  let pendingSeed = null; // set after the account exists, until the user confirms they saved the key
+  let keyText = '';
+  let qrSvg = '';
+  let savedConfirmed = false;
+  let copied = false;
 
   // ── Login state ──
-  let challenge = '';
-  let user_id = '';
+  let keyInput = '';
+  let remember = false;
+  let rememberedAvailable = false;
+  let canScan = typeof window !== 'undefined' && 'BarcodeDetector' in window;
+  let scanning = false;
+  let videoEl;
+  let stopScan = () => {};
+  let fileInput;
 
-  // ── Recover state ──
-  let recoveryCode = '';
+  onMount(async () => {
+    rememberedAvailable = await hasRememberedKey();
+    return () => stopScan();
+  });
 
-  // ── Handle availability check (debounced) ──
-  let handleDebounce;
-
+  // ── Handle availability (debounced) ──
   async function checkHandle() {
     if (handle.length < 3) {
       handleAvailable = null;
@@ -41,10 +46,8 @@
     }
     checkingHandle = true;
     try {
-      const res = await fetch(`/api/users/search?handle=${encodeURIComponent(handle)}`);
-      const data = await res.json();
-      // If search returns results with exact match, handle is taken
-      const taken = Array.isArray(data) && data.some((u) => u.handle === handle);
+      const data = await api.searchUsers(handle);
+      const taken = Array.isArray(data) && data.some((u) => u.handle.toLowerCase() === handle.toLowerCase());
       handleAvailable = !taken;
     } catch {
       handleAvailable = null;
@@ -56,79 +59,30 @@
   function onHandleInput() {
     error = '';
     clearTimeout(handleDebounce);
-    if (mode === 'register' && handle.length >= 3) {
-      handleDebounce = setTimeout(checkHandle, 400);
-    }
+    if (mode === 'register' && handle.length >= 3) handleDebounce = setTimeout(checkHandle, 400);
   }
 
-  // ── Register ──
+  function setMode(m) {
+    mode = m;
+    error = '';
+    stopScan();
+  }
+
+  // ── Register: create the key in this browser, send only public keys ──
   async function handleRegister() {
     if (!handle || !handleAvailable) return;
     loading = true;
     error = '';
-
     try {
-      // 1. Generate master Ed25519 keypair
-      const masterKp = await generateKeyPair();
-
-      // 2. Derive X25519 + auth keypair
-      const derived = await deriveKeys(masterKp);
-
-      // 3. Generate 10 recovery codes and encrypt master key
-      const codeBytes = generateRecoveryCodes();
-      const formattedCodes = codeBytes.map(bytes => formatRecoveryCode(bytes));
-      const backups = [];
-      for (let i = 0; i < formattedCodes.length; i++) {
-        const code = formattedCodes[i];
-        const salt = crypto.getRandomValues(new Uint8Array(32));
-        const encryptedKey = await encryptMasterKeyWithCode(masterKp.privateKey, code, salt);
-        const codeHashBytes = new Uint8Array(
-          await crypto.subtle.digest('SHA-256', new TextEncoder().encode(code))
-        );
-        const codeHash = Array.from(codeHashBytes)
-          .map((b) => b.toString(16).padStart(2, '0'))
-          .join('');
-        backups.push({
-          recovery_code_hash: codeHash,
-          encrypted_private_key: Array.from(encryptedKey),
-          salt: Array.from(salt),
-          auth_salt: Array.from(derived.authSalt),
-        });
-      }
-      // 4. Store keys locally
-      await storeKeyPair({
-        masterPub: masterKp.publicKey,
-        masterPriv: masterKp.privateKey,
-        x25519Pub: derived.x25519Pub,
-        x25519Priv: derived.x25519Priv,
-        authPub: derived.authPub,
-        authPriv: derived.authPriv,
-        authSalt: derived.authSalt,
-      });
-
-      // 5. Register with server
-      const res = await fetch('/api/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          handle,
-          public_key_ed25519: Array.from(masterKp.publicKey),
-          public_key_x25519: Array.from(derived.x25519Pub),
-          derived_public_key_ed25519: Array.from(derived.authPub),
-          encrypted_key_backups: backups,
-        }),
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || 'Registration failed');
-      }
-
-      const data = await res.json();
-      user_id = data.user_id;
-      recoveryCodes = formattedCodes;
-      recoveryCodesShown = true;
-      // Login happens after user clicks "I've Saved These Codes"
+      const seed = newAccountKey();
+      const id = deriveIdentity(seed);
+      await api.register(handle.trim(), id.edPub, id.xPub, id.authPub);
+      pendingSeed = seed;
+      keyText = formatAccountKey(seed);
+      const qr = qrcode(0, 'M');
+      qr.addData(keyText);
+      qr.make();
+      qrSvg = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
     } catch (e) {
       error = e.message || 'Registration failed';
     } finally {
@@ -136,21 +90,51 @@
     }
   }
 
-  // ── Login ──
+  async function finishRegistration() {
+    if (!savedConfirmed || !pendingSeed) return;
+    loading = true;
+    error = '';
+    try {
+      localStorage.setItem('tailchat-last-handle', handle.trim());
+      await auth.login(handle.trim(), pendingSeed, remember);
+      pendingSeed = null;
+      keyText = '';
+    } catch (e) {
+      error = e.message || 'Login failed';
+      loading = false;
+    }
+  }
+
+  async function copyKey() {
+    try {
+      await navigator.clipboard.writeText(keyText);
+      copied = true;
+      setTimeout(() => (copied = false), 2000);
+    } catch {
+      error = 'Could not copy — select the key and copy it manually';
+    }
+  }
+
+  function downloadKey() {
+    const body = `TailChat account key for ${handle}\n\n${keyText}\n\nKeep this file private. Anyone with this key can read your messages.\nIf you lose it, your account and message history cannot be recovered.\n`;
+    const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tailchat-key-${handle}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Login: any device, using the account key ──
   async function handleLogin() {
     if (!handle) return;
     loading = true;
     error = '';
-
     try {
-      // Check if keys exist in IndexedDB
-      const keys = await loadKeyPair();
-      if (!keys) {
-        error = 'No keys found. You need to recover your account.';
-        loading = false;
-        return;
-      }
-      await performLogin();
+      const seed = parseAccountKey(keyInput);
+      localStorage.setItem('tailchat-last-handle', handle.trim());
+      await auth.login(handle.trim(), seed, remember);
+      keyInput = '';
     } catch (e) {
       error = e.message || 'Login failed';
     } finally {
@@ -158,237 +142,163 @@
     }
   }
 
-  async function performLogin() {
-    // 1. Get challenge from server
-    const chalRes = await fetch('/api/auth/challenge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ handle }),
-    });
-    if (!chalRes.ok) throw new Error('Challenge failed');
-    const chalData = await chalRes.json();
-    challenge = chalData.challenge;
-
-    // 2. Sign challenge with derived auth key
-    const keys = await loadKeyPair();
-    if (!keys) throw new Error('Keys not found');
-
-    // Sign using Web Crypto API or noble fallback
-    const challengeBytes = hexToBytes(challenge);
-    let signature;
-    try {
-      const privKey = await crypto.subtle.importKey(
-        'raw', keys.authPriv, { name: 'Ed25519' }, false, ['sign']
-      );
-      signature = await crypto.subtle.sign({ name: 'Ed25519' }, privKey, challengeBytes);
-    } catch {
-      // Fallback to @noble/curves
-      const { ed25519 } = await import('@noble/curves/ed25519');
-      signature = ed25519.sign(challengeBytes, keys.authPriv);
-    }
-    const sigHex = bytesToHex(new Uint8Array(signature));
-
-    // 3. Verify with server
-    const verifyRes = await fetch('/api/auth/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ handle, challenge, signature: sigHex }),
-    });
-    if (!verifyRes.ok) throw new Error('Verification failed');
-    const verifyData = await verifyRes.json();
-
-    // 4. Store session token in sessionStorage
-    sessionStorage.setItem('tailchat-token', verifyData.token);
-    sessionStorage.setItem('tailchat-user-id', verifyData.user_id);
-
-    // Navigate to chat
-    push('/chat');
-  }
-
-  // ── Recover ──
-  async function handleRecover() {
-    if (!handle || !recoveryCode) return;
+  async function continueOnThisDevice() {
     loading = true;
     error = '';
-
     try {
-      // 1. Hash recovery code
-      const codeHashBytes = new Uint8Array(
-        await crypto.subtle.digest('SHA-256', new TextEncoder().encode(recoveryCode))
-      );
-      const codeHash = bytesToHex(codeHashBytes);
-
-      // 2. Request encrypted key from server (server resolves user_id from handle)
-      const recoverRes = await fetch('/api/recover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ handle, recovery_code_hash: codeHash }),
-      });
-      if (!recoverRes.ok) {
-        const errText = await recoverRes.text();
-        throw new Error(errText || 'Invalid recovery code');
-      }
-      const recoverData = await recoverRes.json();
-
-      // 4. Decrypt master key
-      const encryptedKey = hexToBytes(recoverData.encrypted_private_key);
-      const salt = hexToBytes(recoverData.salt);
-      const authSalt = hexToBytes(recoverData.auth_salt);
-      const { decryptMasterKeyWithCode } = await import('../lib/crypto/recover.js');
-      const masterPriv = await decryptMasterKeyWithCode(encryptedKey, recoveryCode, salt);
-
-      // 5. Re-derive all keys using the stored auth_salt (critical for matching server)
-      const { ed25519 } = await import('@noble/curves/ed25519');
-      const masterPub = ed25519.getPublicKey(masterPriv);
-      const derived = await deriveKeys({ publicKey: masterPub, privateKey: masterPriv }, authSalt);
-
-      // 6. Store restored keys
-      await storeKeyPair({
-        masterPub,
-        masterPriv,
-        x25519Pub: derived.x25519Pub,
-        x25519Priv: derived.x25519Priv,
-        authPub: derived.authPub,
-        authPriv: derived.authPriv,
-        authSalt: derived.authSalt,
-      });
-
-      // 7. Login with restored keys
-      await performLogin();
+      const id = await getIdentity();
+      if (!id) throw new Error('No saved key on this device');
+      await auth.login(handle.trim(), id.seed, true);
     } catch (e) {
-      error = e.message || 'Recovery failed';
+      error = e.message || 'Login failed';
     } finally {
       loading = false;
     }
   }
 
-  // ── Dismiss recovery codes and navigate ──
-  async function dismissCodes() {
-    loading = true;
+  async function onKeyFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const m = text.toUpperCase().match(/(?:[A-Z2-9]{5}-){10}[A-Z2-9]{5}/);
+    if (m) keyInput = m[0];
+    else error = 'No account key found in that file';
+    e.target.value = '';
+  }
+
+  async function startScan() {
+    error = '';
     try {
-      await performLogin();
-    } catch (e) {
-      error = e.message || 'Login failed';
-      loading = false;
-      return;
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      scanning = true;
+      await Promise.resolve();
+      videoEl.srcObject = stream;
+      await videoEl.play();
+      const detector = new BarcodeDetector({ formats: ['qr_code'] });
+      let active = true;
+      stopScan = () => {
+        active = false;
+        stream.getTracks().forEach((t) => t.stop());
+        scanning = false;
+        stopScan = () => {};
+      };
+      const tick = async () => {
+        if (!active) return;
+        try {
+          const codes = await detector.detect(videoEl);
+          const m = codes[0]?.rawValue?.toUpperCase().match(/(?:[A-Z2-9]{5}-){10}[A-Z2-9]{5}/);
+          if (m) {
+            keyInput = m[0];
+            stopScan();
+            return;
+          }
+        } catch {
+          /* keep trying */
+        }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    } catch {
+      scanning = false;
+      error = 'Could not open the camera';
     }
-    recoveryCodesShown = false;
-    push('/chat');
-  }
-
-  // ── Utility functions ──
-  function bytesToHex(bytes) {
-    return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
-  }
-
-  function hexToBytes(hex) {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < hex.length; i += 2) {
-      bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-    }
-    return bytes;
   }
 </script>
 
 <div class="login-container">
   <div class="login-card">
-    <!-- Logo / Title -->
     <div class="text-center mb-8">
-      <h1 class="text-3xl font-bold tracking-tight" style="color: var(--color-accent);">
-        TailChat
-      </h1>
+      <h1 class="text-3xl font-bold tracking-tight" style="color: var(--color-accent);">TailChat</h1>
       <p class="mt-2" style="color: var(--color-text-muted); font-size: 0.875rem;">
         Zero-knowledge, E2E-encrypted messenger
       </p>
     </div>
 
-    {#if recoveryCodesShown}
-      <!-- Recovery codes display -->
+    {#if pendingSeed}
+      <!-- Show the account key once, before the user can continue -->
       <div class="codes-panel">
-        <h2 class="text-lg font-semibold mb-2">Recovery Codes</h2>
-        <p class="mb-4" style="color: var(--color-text-muted); font-size: 0.875rem;">
-          Save these codes somewhere safe. You'll need them to recover your account
-          if you lose your device. Each code can only be used once.
+        <h2 class="text-lg font-semibold mb-2">Your account key</h2>
+        <p class="warn">
+          This key <strong>is</strong> your account. It decrypts your messages and signs you in on any device.
+          <strong>We cannot recover it</strong> — not even the server admin. Save it in a password manager or print the QR code.
         </p>
-        <div class="codes-list">
-          {#each recoveryCodes as code, i}
-            <div class="code-item">
-              <span class="code-index">{i + 1}.</span>
-              <code class="code-value">{code}</code>
-            </div>
-          {/each}
+        <div class="key-box">{keyText}</div>
+        <div class="qr">{@html qrSvg}</div>
+        <div class="row">
+          <button type="button" class="btn btn-secondary btn-sm" on:click={copyKey}>{copied ? 'Copied ✓' : 'Copy'}</button>
+          <button type="button" class="btn btn-secondary btn-sm" on:click={downloadKey}>Download file</button>
         </div>
-        <button
-          class="btn btn-primary mt-6 w-full"
-          on:click={dismissCodes}
-        >
-          I've Saved These Codes — Start Chatting
+        <label class="check">
+          <input type="checkbox" bind:checked={savedConfirmed} />
+          <span>I have saved my account key somewhere safe. I understand it cannot be recovered if lost.</span>
+        </label>
+        <label class="check">
+          <input type="checkbox" bind:checked={remember} />
+          <span>Remember this device (don't ask for the key again here). Only on devices you own.</span>
+        </label>
+        {#if error}<div class="error-banner">{error}</div>{/if}
+        <button class="btn btn-primary w-full" disabled={!savedConfirmed || loading} on:click={finishRegistration}>
+          {loading ? 'Signing in...' : 'Start Chatting'}
         </button>
       </div>
     {:else}
-      <!-- Tab selector -->
       <div class="tab-bar">
-        <button
-          class="tab"
-          class:active={mode === 'login'}
-          on:click={() => { mode = 'login'; error = ''; }}
-        >
-          Login
-        </button>
-        <button
-          class="tab"
-          class:active={mode === 'register'}
-          on:click={() => { mode = 'register'; error = ''; }}
-        >
-          Register
-        </button>
-        <button
-          class="tab"
-          class:active={mode === 'recover'}
-          on:click={() => { mode = 'recover'; error = ''; }}
-        >
-          Recover
-        </button>
+        <button class="tab" class:active={mode === 'login'} on:click={() => setMode('login')}>Sign In</button>
+        <button class="tab" class:active={mode === 'register'} on:click={() => setMode('register')}>Create Account</button>
       </div>
 
-      <!-- Error message -->
-      {#if error}
-        <div class="error-banner">{error}</div>
-      {/if}
+      {#if error}<div class="error-banner">{error}</div>{/if}
 
-      <!-- Login form -->
       {#if mode === 'login'}
         <form on:submit|preventDefault={handleLogin} class="space-y-4">
           <div>
             <label for="login-handle" class="label">Handle</label>
-            <input
-              id="login-handle"
-              type="text"
-              class="input"
-              placeholder="your handle"
-              bind:value={handle}
-              required
-            />
+            <input id="login-handle" type="text" class="input" placeholder="your handle" autocomplete="username" bind:value={handle} required />
           </div>
-          <button type="submit" class="btn btn-primary w-full" disabled={loading}>
+
+          {#if rememberedAvailable}
+            <button type="button" class="btn btn-primary w-full" disabled={loading || !handle} on:click={continueOnThisDevice}>
+              {loading ? 'Signing in...' : 'Continue on this device'}
+            </button>
+            <p class="warn" style="text-align:center;">or enter your account key to use a different one</p>
+          {/if}
+
+          <div>
+            <label for="login-key" class="label">Account key</label>
+            <textarea
+              id="login-key" class="input" rows="3" spellcheck="false" autocomplete="off" autocapitalize="characters"
+              placeholder="XXXXX-XXXXX-XXXXX-…" bind:value={keyInput}
+            ></textarea>
+            <div class="row mt-3">
+              <button type="button" class="btn btn-secondary btn-sm" on:click={() => fileInput.click()}>Choose key file</button>
+              {#if canScan}
+                <button type="button" class="btn btn-secondary btn-sm" on:click={scanning ? stopScan : startScan}>
+                  {scanning ? 'Stop camera' : 'Scan QR'}
+                </button>
+              {/if}
+            </div>
+            <input bind:this={fileInput} type="file" accept=".txt,.json,text/plain" hidden on:change={onKeyFile} />
+            {#if scanning}<!-- svelte-ignore a11y-media-has-caption --><video class="scan-video" bind:this={videoEl} playsinline muted></video>{/if}
+          </div>
+
+          <label class="check">
+            <input type="checkbox" bind:checked={remember} />
+            <span>Remember this device — only on a device you own</span>
+          </label>
+          <button type="submit" class="btn btn-primary w-full" disabled={loading || !keyInput}>
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
+          <p class="warn">
+            New phone, tablet or laptop? Just enter your handle and account key here — all your past messages will appear.
+          </p>
         </form>
-
-      <!-- Register form -->
-      {:else if mode === 'register'}
+      {:else}
         <form on:submit|preventDefault={handleRegister} class="space-y-4">
           <div>
             <label for="reg-handle" class="label">Choose a Handle</label>
             <input
-              id="reg-handle"
-              type="text"
-              class="input"
-              placeholder="your handle"
-              bind:value={handle}
-              on:input={onHandleInput}
-              required
-              minlength="3"
+              id="reg-handle" type="text" class="input" placeholder="your handle" autocomplete="username"
+              bind:value={handle} on:input={onHandleInput} required minlength="3" maxlength="32" pattern="[A-Za-z0-9_.\-]+"
             />
             {#if checkingHandle}
               <span class="field-status checking">Checking...</span>
@@ -398,42 +308,11 @@
               <span class="field-status taken">✗ Taken</span>
             {/if}
           </div>
-          <button
-            type="submit"
-            class="btn btn-primary w-full"
-            disabled={loading || !handleAvailable}
-          >
+          <p class="warn">
+            Your account key is created in this browser and shown once. There are no passwords and nothing for the server to reset.
+          </p>
+          <button type="submit" class="btn btn-primary w-full" disabled={loading || !handleAvailable}>
             {loading ? 'Creating account...' : 'Create Account'}
-          </button>
-        </form>
-
-      <!-- Recover form -->
-      {:else if mode === 'recover'}
-        <form on:submit|preventDefault={handleRecover} class="space-y-4">
-          <div>
-            <label for="rec-handle" class="label">Handle</label>
-            <input
-              id="rec-handle"
-              type="text"
-              class="input"
-              placeholder="your handle"
-              bind:value={handle}
-              required
-            />
-          </div>
-          <div>
-            <label for="rec-code" class="label">Recovery Code</label>
-            <input
-              id="rec-code"
-              type="text"
-              class="input"
-              placeholder="X3KM-7FJ2-PQ9N-RT8B"
-              bind:value={recoveryCode}
-              required
-            />
-          </div>
-          <button type="submit" class="btn btn-primary w-full" disabled={loading}>
-            {loading ? 'Recovering...' : 'Recover Account'}
           </button>
         </form>
       {/if}
@@ -624,4 +503,34 @@
   .mb-8 { margin-bottom: 2rem; }
   .w-full { width: 100%; }
   .text-center { text-align: center; }
+
+  .key-box {
+    font-family: ui-monospace, monospace;
+    font-size: 0.95rem;
+    line-height: 1.7;
+    letter-spacing: 0.04em;
+    word-break: break-all;
+    padding: 0.75rem;
+    border: 1px dashed var(--color-accent);
+    border-radius: 8px;
+    background: var(--color-bg);
+    user-select: all;
+  }
+  .qr { display: flex; justify-content: center; margin: 1rem 0; }
+  .qr :global(svg) { width: 180px; height: 180px; background: #fff; padding: 6px; border-radius: 8px; }
+  .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .btn-secondary {
+    background: transparent;
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+  }
+  .btn-secondary:hover:not(:disabled) { border-color: var(--color-accent); }
+  .btn-sm { padding: 0.4rem 0.75rem; font-size: 0.8125rem; width: auto; }
+  textarea.input { resize: none; font-family: ui-monospace, monospace; letter-spacing: 0.04em; }
+  .check { display: flex; align-items: flex-start; gap: 0.5rem; font-size: 0.8125rem; color: var(--color-text-muted); margin: 0.75rem 0; }
+  .warn { font-size: 0.8125rem; color: var(--color-text-muted); margin: 0.75rem 0; }
+  .warn strong { color: var(--color-text); }
+  .link { background: none; border: none; color: var(--color-accent); cursor: pointer; font-size: 0.8125rem; padding: 0; }
+  .scan-video { width: 100%; border-radius: 8px; margin-top: 0.5rem; }
+  .mt-3 { margin-top: 0.75rem; }
 </style>

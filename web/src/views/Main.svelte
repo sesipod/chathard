@@ -10,6 +10,8 @@
   } from '../lib/stores/chats.js';
   import { auth } from '../lib/stores/auth.js';
   import api from '../lib/api.js';
+  import { createGroup, invalidateGroup, rotateGroupKey, sendFile, sendText } from '../lib/chat.js';
+  import { getUser } from '../lib/directory.js';
   import LeftPanel from '../components/LeftPanel.svelte';
   import RightPanel from '../components/RightPanel.svelte';
   import NewChatModal from '../components/NewChatModal.svelte';
@@ -74,19 +76,20 @@
     // Initial data load
     await chatStore.loadConversations();
 
-    // Connect WebSocket
+    // Connect WebSocket (reconnects automatically; resyncs after a reconnect)
     if (token) {
-      ws = api.connectWebSocket(token);
-
-      ws.addEventListener('open', () => {
-        wsReady = true;
-      });
-      ws.addEventListener('message', handleWSMessage);
-      ws.addEventListener('close', () => {
-        wsReady = false;
-      });
-      ws.addEventListener('error', () => {
-        wsReady = false;
+      ws = api.connectWebSocket(token, {
+        onMessage: handleWSMessage,
+        onOpen: (reconnect) => {
+          wsReady = true;
+          if (reconnect) {
+            chatStore.loadConversations();
+            if ($activeConversationId) chatStore.loadMessages($activeConversationId);
+          }
+        },
+        onClose: () => {
+          wsReady = false;
+        },
       });
     }
 
@@ -104,20 +107,45 @@
     };
   });
 
+  // The group admin's client rotates the key after someone leaves.
+  $: maybeRotate($conversations);
+  const rotating = new Set();
+  async function maybeRotate(list) {
+    const me = sessionStorage.getItem('tailchat-user-id');
+    for (const c of list) {
+      if (c.type === 'group' && c.needs_rotation && c.created_by === me && !rotating.has(c.id)) {
+        rotating.add(c.id);
+        try {
+          await rotateGroupKey(c.id);
+          await chatStore.loadConversations();
+        } catch (e) {
+          console.warn('group key rotation failed:', e.message);
+        } finally {
+          rotating.delete(c.id);
+        }
+      }
+    }
+  }
+
   // ── WebSocket event handler ──
   function handleWSMessage(event) {
     try {
       const data = JSON.parse(event.data);
       switch (data.type) {
         case 'new_message': {
-          // Reload conversations and messages to get full encrypted content
-          // For 1:1, convId is the sender's ID. For groups, it's the group_id.
-          const convId = data.group_id || data.sender_id;
+          // The server only says WHICH conversation changed; we fetch and decrypt it here.
+          const convId = data.conversation_id || data.group_id || data.sender_id;
           const isGroup = !!data.group_id;
           if (convId) {
             chatStore.loadConversations();
             chatStore.loadMessagesWithType(convId, isGroup);
           }
+          break;
+        }
+        case 'group_changed': {
+          // Roster or key changed: refresh (the admin's client rotates the key if someone left).
+          if (data.group_id) invalidateGroup(data.group_id);
+          chatStore.loadConversations();
           break;
         }
         case 'read_receipt': {
@@ -148,15 +176,19 @@
   }
 
   // ── Typing: receive indicator ──
-  function handleTypingReceive(data) {
+  async function handleTypingReceive(data) {
     const convId = data.conversation_id;
-    const handle = data.handle;
-    if (!convId || !handle) return;
+    if (!convId || !data.user_id) return;
+    let handle = 'someone';
+    try {
+      handle = (await getUser(data.user_id)).handle;
+    } catch {
+      /* unknown or key-changed contact: still show that someone is typing */
+    }
 
     if (!typingSenders[convId]) typingSenders[convId] = new Set();
     typingSenders[convId].add(handle);
 
-    // Reset auto-clear timer
     if (typingTimers[convId]) clearTimeout(typingTimers[convId]);
     typingTimers[convId] = setTimeout(() => {
       if (typingSenders[convId]) {
@@ -176,13 +208,12 @@
     const last = lastTypingSent[$activeConversationId] || 0;
     if (now - last >= TYPING_INTERVAL) {
       lastTypingSent[$activeConversationId] = now;
-      ws.send(
-        JSON.stringify({
-          type: 'typing',
-          conversation_id: $activeConversationId,
-          is_typing: true,
-        }),
-      );
+      ws.send({
+        type: 'typing',
+        conversation_id: $activeConversationId,
+        is_group: $activeConversation?.type === 'group',
+        is_typing: true,
+      });
     }
   }
 
@@ -200,139 +231,81 @@
   }
 
   // ── Sending messages (optimistic UI with retry queue) ──
+  const convKey = (conv) => conv.user_id || conv.id;
+
   async function handleSendMessage(e) {
     const text = e.detail;
     const conv = $activeConversation;
     if (!conv || !text) return;
 
-    const convId = conv.user_id || conv.id;
-    const userId =
-      currentUser?.uuid || sessionStorage.getItem('tailchat-user-id');
+    const convId = convKey(conv);
+    const userId = currentUser?.uuid || sessionStorage.getItem('tailchat-user-id');
 
-    // Optimistic insert
-    const optimisticId =
-      'opt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-    const optimisticMsg = {
+    const optimisticId = 'opt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    chatStore.addMessage(convId, {
       id: optimisticId,
       content: text,
       created_at: new Date().toISOString(),
       status: 'sent',
       is_own: true,
       sender_id: userId,
-    };
-    chatStore.addMessage(convId, optimisticMsg);
+    });
 
-    // Derive expiresIn from conversation's current retention setting
     const expiresIn = conv.expires_in && conv.expires_in !== 'Never' ? conv.expires_in : undefined;
 
     try {
-      const result = await api.sendMessage({
-        recipientId: conv.type === 'group' ? null : convId,
-        groupId: conv.type === 'group' ? convId : null,
-        ciphertext: new TextEncoder().encode(text),
-        ephemeralPub: new Uint8Array(32),
-        nonce: new Uint8Array(12),
-        expiresIn,
-      });
-
-      // Replace optimistic message with server response
+      const result = await sendText(conv, text, expiresIn);
       if (result && result.id) {
         chatStore.messages.update((m) => ({
           ...m,
           [convId]: (m[convId] || []).map((msg) =>
-            msg.id === optimisticId
-              ? { ...result, is_own: true, content: text }
-              : msg,
+            msg.id === optimisticId ? { ...msg, id: result.id, is_own: true, content: text } : msg,
           ),
         }));
       }
     } catch (err) {
-      // Mark as failed
       chatStore.messages.update((m) => ({
         ...m,
         [convId]: (m[convId] || []).map((msg) =>
           msg.id === optimisticId ? { ...msg, status: 'failed' } : msg,
         ),
       }));
-
-      // Queue for retry
-      failedMessages = [
-        ...failedMessages,
-        { convId, text, timestamp: new Date().toISOString() },
-      ];
-      showToast('Message failed. Queued for retry.');
-
-      // Register background sync for offline retry
-      if ('serviceWorker' in navigator && 'SyncManager' in window) {
-        try {
-          const reg = await navigator.serviceWorker.ready;
-          await reg.sync.register('send-message');
-        } catch {
-          /* background sync unavailable */
-        }
-      }
+      failedMessages = [...failedMessages, { convId, text, timestamp: new Date().toISOString() }];
+      showToast(err.name === 'KeyChangedError' ? err.message : 'Message failed to send.');
     }
   }
 
   async function handleAttachFile(e) {
     const conv = $activeConversation;
-    const expiresIn = conv?.expires_in && conv.expires_in !== 'Never' ? conv.expires_in : undefined;
-    const convId = conv.user_id || conv.id;
-    const isGroup = conv?.type === 'group';
+    if (!conv) return;
+    const file = e.detail;
+    const convId = convKey(conv);
+    const expiresIn = conv.expires_in && conv.expires_in !== 'Never' ? conv.expires_in : undefined;
     try {
-      const result = await api.uploadFile(e.detail, expiresIn, convId, isGroup ? 'group' : 'direct');
-      if (result && result.file_id) {
-        const userId = currentUser?.uuid || sessionStorage.getItem('tailchat-user-id');
-        const fileName = e.detail.name || 'file';
-        const text = `📎 ${fileName} (${result.file_id})`;
-
-        // Optimistic insert so sender sees the file message immediately
-        const optimisticId = 'opt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-        chatStore.addMessage(convId, {
-          id: optimisticId,
-          content: text,
-          created_at: new Date().toISOString(),
-          status: 'sent',
-          is_own: true,
-          sender_id: userId,
-        });
-
-        const msgResult = await api.sendMessage({
-          recipientId: conv.type === 'group' ? null : convId,
-          groupId: conv.type === 'group' ? convId : null,
-          ciphertext: new TextEncoder().encode(text),
-          ephemeralPub: new Uint8Array(32),
-          nonce: new Uint8Array(12),
-        });
-
-        // Replace optimistic with server result
-        if (msgResult && msgResult.id) {
-          chatStore.messages.update((m) => ({
-            ...m,
-            [convId]: (m[convId] || []).map((msg) =>
-              msg.id === optimisticId
-                ? { ...msgResult, is_own: true, content: text }
-                : msg,
-            ),
-          }));
-          // Link file to message so FilesModal can jump to it
-          api.linkFileToMessage(result.file_id, msgResult.id).catch(() => {});
-        }
-        chatStore.loadConversations();
-        showToast('File sent');
-      } else {
-        showToast('File uploaded');
-      }
-    } catch {
-      showToast('File upload failed');
+      showToast('Encrypting and sending…');
+      const { result, body } = await sendFile(conv, file, expiresIn);
+      const userId = currentUser?.uuid || sessionStorage.getItem('tailchat-user-id');
+      chatStore.addMessage(convId, {
+        id: result.id,
+        content: `📎 ${body.file.name}`,
+        file: body.file,
+        created_at: new Date().toISOString(),
+        status: 'sent',
+        is_own: true,
+        sender_id: userId,
+      });
+      chatStore.loadConversations();
+      showToast('File sent');
+    } catch (err) {
+      showToast(err.message?.includes('too large') || err.message?.includes('exceeds') ? 'File is too large' : 'File upload failed');
     }
   }
 
   // ── Group creation ──
   async function handleCreateGroup(e) {
-    const { name, memberIds } = e.detail;
+    const { name, members } = e.detail;
     try {
-      await api.createGroup(new TextEncoder().encode(name), memberIds);
+      await createGroup(name, members);
       showNewGroup = false;
       showToast('Group created!');
       await chatStore.loadConversations();
@@ -401,7 +374,7 @@
 
   async function handleLeaveGroup(e) {
     try {
-      await api.removeMember(
+      await api.leaveGroup(
         e.detail,
         currentUser?.uuid || sessionStorage.getItem('tailchat-user-id'),
       );
